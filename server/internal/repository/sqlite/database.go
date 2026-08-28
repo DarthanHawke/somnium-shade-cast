@@ -1,5 +1,5 @@
-// Пакет database реализовывает работу с базами данных
-package database
+// Пакет sqlite реализовывает работу с sqlite
+package sqlite
 
 import (
 	"github.com/jmoiron/sqlx"
@@ -15,12 +15,17 @@ type Database struct {
 }
 
 // New создаёт новое подключение к БД
-func New(dns string) (*Database, error) {
+func Open(dsn string) (*Database, error) {
 	// Открываем БД
-	db, err := sqlx.Connect("sqlite", dns)
+	db, err := sqlx.Connect("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Параметры соединения
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 
 	// Проверяем соединение
 	if err := db.Ping(); err != nil {
@@ -35,14 +40,22 @@ func New(dns string) (*Database, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return nil, fmt.Errorf("failed to enable foreign keys: %v", err)
 	}
+	// Добавляем паузы с ретраем при блокировке бд
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("failed to enable busy timeout: %v", err)
+	}
+	// Т.к. используем WAL, то для целостности хватит нормал
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		return nil, fmt.Errorf("failed to enable normal synchronous: %v", err)
+	}
 
 	return &Database{db}, nil
 }
 
 // Close закрывает подключение к БД
 func (db *Database) Close() error {
-	if db != nil {
-		return db.Close()
+	if db != nil && db.DB != nil {
+		return db.DB.Close() // Закрываем базовый sqlx.DB
 	}
 	return nil
 }

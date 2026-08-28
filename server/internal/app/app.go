@@ -31,11 +31,16 @@ func NewApp(cfg *config.Config, log *slog.Logger) (*App, error) {
 	log.Info("initializing server", "port", cfg.Server.Port)
 
 	// Подключаемся к бд
-	db, err := database.New(cfg.Database.Path)
+	db, err := database.Open(cfg.Database.Path)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	log.Info("database connected")
+
+	// Применяем миграции
+	if err := db.Migrate(context.Background()); err != nil {
+		return nil, fmt.Errorf("migrations: %w", err)
+	}
 
 	// открываем http сервер
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -124,7 +129,6 @@ func (app *App) routes() {
 	// Версия API v1 — базовый роут
 	app.router.Route("/api/v1", func(r chi.Router) {
 		r.Get("/ping", app.handlePing())
-		r.Get("/version", app.handleVersion())
 
 	})
 }
@@ -147,18 +151,6 @@ func (app *App) handlePing() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		response := map[string]string{
 			"message": "pong",
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}
-}
-
-// handleVersion — тестовый эндпоинт
-func (app *App) handleVersion() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]string{
-			"version": "0.1.0",
 		}
 
 		w.Header().Set("Content-Type", "application/json")
