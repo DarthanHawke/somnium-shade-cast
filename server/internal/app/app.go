@@ -12,8 +12,12 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/DarthanHawke/somnium-shade-cast/server/docs"
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/config"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/repository/sqlite"
 	database "github.com/DarthanHawke/somnium-shade-cast/server/internal/repository/sqlite"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/transport/http/handlers"
+	httpSwagger "github.com/swaggo/http-swagger"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -24,6 +28,7 @@ type App struct {
 	database *database.Database
 	http     *http.Server
 	router   *chi.Mux
+	users    *sqlite.UserRepository
 }
 
 // NewApp создает все компоненты и настраивает зависимости
@@ -42,6 +47,10 @@ func NewApp(cfg *config.Config, log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("migrations: %w", err)
 	}
 
+	// Инициализация репозиториев
+	users := sqlite.NewUserRepository(db)
+	userHandler := handlers.NewUserHandler(users)
+
 	// открываем http сервер
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	router := chi.NewRouter()
@@ -54,8 +63,9 @@ func NewApp(cfg *config.Config, log *slog.Logger) (*App, error) {
 		database: db,
 		http:     http,
 		router:   router,
+		users:    users,
 	}
-	app.routes()
+	app.routes(userHandler)
 
 	return &app, nil
 }
@@ -122,15 +132,11 @@ func (app *App) stopHTTPServer() {
 }
 
 // routes регестрирует эндпоинты
-func (app *App) routes() {
+func (app *App) routes(userHandler *handlers.UserHandler) {
 	// Health-check для мониторинга
 	app.router.Get("/health", app.handleHealth())
-
-	// Версия API v1 — базовый роут
-	app.router.Route("/api/v1", func(r chi.Router) {
-		r.Get("/ping", app.handlePing())
-
-	})
+	app.router.Get("/swagger/*", httpSwagger.WrapHandler)
+	app.router.Mount("/users", userHandler.Routes())
 }
 
 // handleHealth возвращает статус сервиса
@@ -139,18 +145,6 @@ func (app *App) handleHealth() http.HandlerFunc {
 		response := map[string]any{
 			"status":  "ok",
 			"version": "0.1.0",
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}
-}
-
-// handlePing — тестовый эндпоинт
-func (app *App) handlePing() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]string{
-			"message": "pong",
 		}
 
 		w.Header().Set("Content-Type", "application/json")

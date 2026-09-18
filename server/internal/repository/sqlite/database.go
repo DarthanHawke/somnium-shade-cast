@@ -2,6 +2,9 @@
 package sqlite
 
 import (
+	"context"
+	"errors"
+
 	"github.com/jmoiron/sqlx"
 
 	"fmt"
@@ -58,4 +61,40 @@ func (db *Database) Close() error {
 		return db.DB.Close() // Закрываем базовый sqlx.DB
 	}
 	return nil
+}
+
+// WithTransaction выполняет функцию в транзакции.
+// Автоматически коммитит при успехе, откат при ошибке.
+func (db *Database) WithTransaction(ctx context.Context, fn func(*sqlx.Tx) error) error {
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if p := recover(); p != nil { // перехватываем panic
+			_ = tx.Rollback()
+			panic(p) // пробрасываем panic дальше после отката
+		}
+	}()
+
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// isUniqueViolation - возвращает ошибки с кодами SQLite
+func isUniqueViolation(err error) bool {
+	// код 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
+	type coder interface{ Code() int }
+	var c coder
+	if errors.As(err, &c) {
+		return c.Code() == 2067 || c.Code() == 1555
+	}
+	return false
 }

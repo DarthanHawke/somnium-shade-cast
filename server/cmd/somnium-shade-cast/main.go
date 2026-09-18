@@ -9,6 +9,14 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/lib/logger"
 )
 
+// @title           Somnium Shade Cast API
+// @version         1.0
+// @description     API Somnium Shade Cast
+// @host            localhost:8080
+// @BasePath        /
+// @securityDefinitions.apiKey CookieAuth
+// @in                cookie
+// @name              session_id
 func main() {
 	// Загружаем конфиг
 	cfg, err := config.Load("")

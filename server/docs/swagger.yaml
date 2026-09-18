@@ -1,0 +1,198 @@
+basePath: /
+definitions:
+  domain.CreateUserRequest:
+    properties:
+      display_name:
+        example: Example Example
+        type: string
+      name:
+        example: example
+        type: string
+    type: object
+  domain.ErrorResponse:
+    properties:
+      code:
+        example: VALIDATION_ERROR
+        type: string
+      details:
+        type: string
+      error:
+        example: invalid request
+        type: string
+    type: object
+  domain.GetUserResponse:
+    properties:
+      created_at:
+        example: 1735689600000
+        type: integer
+      display_name:
+        example: John Doe
+        type: string
+      is_active:
+        example: true
+        type: boolean
+      name:
+        example: johndoe
+        type: string
+      public_id:
+        example: 01H2XJZ9K8F7D6E5C4B3A2Z1Y
+        type: string
+      role:
+        allOf:
+        - $ref: '#/definitions/domain.Role'
+        example: member
+    type: object
+  domain.Role:
+    enum:
+    - admin
+    - member
+    type: string
+    x-enum-varnames:
+    - RoleAdmin
+    - RoleMember
+  domain.SuccessResponse:
+    properties:
+      message:
+        example: operation completed successfully
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API Somnium Shade Cast
+  title: Somnium Shade Cast API
+  version: "1.0"
+paths:
+  /users:
+    post:
+      consumes:
+      - application/json
+      description: Создаёт нового пользователя с указанными данными
+      parameters:
+      - description: Данные пользователя
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Пользователь создан
+          schema:
+            $ref: '#/definitions/domain.GetUserResponse'
+        "400":
+          description: Неверный запрос
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "409":
+          description: Пользователь уже существует
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Создать пользователя
+      tags:
+      - Users
+  /users/{publicID}:
+    get:
+      description: Возвращает информацию о пользователе по его ID
+      parameters:
+      - description: ID пользователя
+        in: path
+        name: publicID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Пользователь найден
+          schema:
+            $ref: '#/definitions/domain.GetUserResponse'
+        "400":
+          description: Неверный ID
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "404":
+          description: Пользователь не найден
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Получить пользователя
+      tags:
+      - Users
+  /users/{publicID}/activate:
+    post:
+      description: Активирует ранее деактивированного пользователя
+      parameters:
+      - description: ID пользователя
+        in: path
+        name: publicID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Пользователь активирован
+          schema:
+            $ref: '#/definitions/domain.SuccessResponse'
+        "400":
+          description: Неверный ID
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "404":
+          description: Пользователь не найден
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Активировать пользователя
+      tags:
+      - Users
+  /users/{publicID}/deactivate:
+    post:
+      description: Деактивирует пользователя
+      parameters:
+      - description: ID пользователя
+        in: path
+        name: publicID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Пользователь деактивирован
+          schema:
+            $ref: '#/definitions/domain.SuccessResponse'
+        "400":
+          description: Неверный ID
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "404":
+          description: Пользователь не найден
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/domain.ErrorResponse'
+      summary: Деактивировать пользователя
+      tags:
+      - Users
+securityDefinitions:
+  CookieAuth:
+    in: cookie
+    name: session_id
+    type: apiKey
+swagger: "2.0"
