@@ -1,7 +1,10 @@
-// Пакет database реализовывает работу с базами данных
-package database
+// Пакет sqlite реализовывает работу с sqlite
+package sqlite
 
 import (
+	"context"
+	"errors"
+
 	"github.com/jmoiron/sqlx"
 
 	"fmt"
@@ -15,12 +18,17 @@ type Database struct {
 }
 
 // New создаёт новое подключение к БД
-func New(dns string) (*Database, error) {
+func Open(dsn string) (*Database, error) {
 	// Открываем БД
-	db, err := sqlx.Connect("sqlite", dns)
+	db, err := sqlx.Connect("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Параметры соединения
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 
 	// Проверяем соединение
 	if err := db.Ping(); err != nil {
@@ -35,14 +43,58 @@ func New(dns string) (*Database, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return nil, fmt.Errorf("failed to enable foreign keys: %v", err)
 	}
+	// Добавляем паузы с ретраем при блокировке бд
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("failed to enable busy timeout: %v", err)
+	}
+	// Т.к. используем WAL, то для целостности хватит нормал
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		return nil, fmt.Errorf("failed to enable normal synchronous: %v", err)
+	}
 
 	return &Database{db}, nil
 }
 
 // Close закрывает подключение к БД
 func (db *Database) Close() error {
-	if db != nil {
-		return db.Close()
+	if db != nil && db.DB != nil {
+		return db.DB.Close() // Закрываем базовый sqlx.DB
 	}
 	return nil
+}
+
+// WithTransaction выполняет функцию в транзакции.
+// Автоматически коммитит при успехе, откат при ошибке.
+func (db *Database) WithTransaction(ctx context.Context, fn func(*sqlx.Tx) error) error {
+	tx, err := db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if p := recover(); p != nil { // перехватываем panic
+			_ = tx.Rollback()
+			panic(p) // пробрасываем panic дальше после отката
+		}
+	}()
+
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// isUniqueViolation - возвращает ошибки с кодами SQLite
+func isUniqueViolation(err error) bool {
+	// код 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
+	type coder interface{ Code() int }
+	var c coder
+	if errors.As(err, &c) {
+		return c.Code() == 2067 || c.Code() == 1555
+	}
+	return false
 }

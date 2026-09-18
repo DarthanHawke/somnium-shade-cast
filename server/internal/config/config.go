@@ -54,7 +54,7 @@ func Load(configPath string) (*Config, error) {
 	// Настройки по умолчанию
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.host", "0.0.0.0")
-	v.SetDefault("database.path", "./data/ssc.db")
+	v.SetDefault("database.path", "./data/repository/ssc.db")
 	v.SetDefault("storage.path", "./data/audio")
 	v.SetDefault("security.cert_dir", "./data/certs")
 	v.SetDefault("Logs.log_file", "")
