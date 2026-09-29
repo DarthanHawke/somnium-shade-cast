@@ -83,6 +83,7 @@ var (
 	ErrForbidden     = errors.New("forbidden")
 	ErrUnauthorized  = errors.New("unauthorized")
 	ErrInvalidInput  = errors.New("invalid input")
+	ErrConflict      = errors.New("conflict")
 )
 
 // SuccessResponse - общий успешный ответ

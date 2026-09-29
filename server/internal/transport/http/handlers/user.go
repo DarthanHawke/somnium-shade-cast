@@ -10,7 +10,7 @@ import (
 )
 
 type UserRepository interface {
-	Create(ctx context.Context, user *domain.User) error
+	Insert(ctx context.Context, user *domain.User) error
 	GetByPublicID(ctx context.Context, publicID domain.PublicID) (*domain.User, error)
 	Deactivate(ctx context.Context, publicID domain.PublicID) error
 	Activate(ctx context.Context, publicID domain.PublicID) error
@@ -69,7 +69,7 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.users.Create(r.Context(), user); err != nil {
+	if err := h.users.Insert(r.Context(), user); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save user", "DB_ERROR", err.Error())
 		return
 	}

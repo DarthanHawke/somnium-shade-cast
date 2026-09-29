@@ -20,9 +20,9 @@ func NewAlbumRepository(db *Database) *AlbumRepository {
 	}
 }
 
-// Create - создает новый альбом
-func (r *AlbumRepository) Create(ctx context.Context, album *domain.Album) error {
-	const op = "album.Create"
+// Insert - вставка нового альбома
+func (r *AlbumRepository) Insert(ctx context.Context, album *domain.Album) error {
+	const op = "album.Insert"
 
 	const query = `
 		INSERT INTO albums (public_id, artist_id, title, norm_title, year, release_date, 
@@ -32,7 +32,8 @@ func (r *AlbumRepository) Create(ctx context.Context, album *domain.Album) error
 					:mbid, :lastfm_url, :cover_blob_id, :total_tracks, :is_complete,
 					:enrich_status, :enriched_at, :created_at, :updated_at)`
 
-	res, err := r.db.NamedExecContext(ctx, query, album)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.NamedExecContext(ctx, query, album)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return domain.ErrAlreadyExists
@@ -60,8 +61,9 @@ func (r *AlbumRepository) GetByPublicID(
 					enrich_status, enriched_at, created_at, updated_at
 		FROM albums WHERE public_id = $1`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var album domain.Album
-	err := r.db.GetContext(ctx, &album, query, publicID)
+	err := exec.GetContext(ctx, &album, query, publicID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -86,7 +88,8 @@ func (r *AlbumRepository) Update(ctx context.Context, album *domain.Album) error
 			enriched_at = :enriched_at, updated_at = :updated_at
 		WHERE public_id = :public_id`
 
-	result, err := r.db.NamedExecContext(ctx, query, album)
+	exec := r.db.ExecutorFromCtx(ctx)
+	result, err := exec.NamedExecContext(ctx, query, album)
 	if err != nil {
 		return &domain.WrappedError{
 			Op:  op,
@@ -109,12 +112,13 @@ func (r *AlbumRepository) Update(ctx context.Context, album *domain.Album) error
 }
 
 // Delete - хард удаление исполнителя
-func (r *AlbumRepository) Delete(ctx context.Context, tx *sql.Tx, publicID domain.PublicID) error {
+func (r *AlbumRepository) Delete(ctx context.Context, publicID domain.PublicID) error {
 	const op = "album.Delete"
 
 	const query = `DELETE FROM albums WHERE public_id = $1`
 
-	res, err := tx.ExecContext(ctx, query, publicID)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.ExecContext(ctx, query, publicID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrNotFound
@@ -154,8 +158,9 @@ func (r *AlbumRepository) List(
 		ORDER BY norm_title
 		LIMIT $1 OFFSET $2`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var albums []domain.Album
-	err := r.db.SelectContext(ctx, &albums, query, limit, offset)
+	err := exec.SelectContext(ctx, &albums, query, limit, offset)
 	if err != nil {
 		return nil, &domain.WrappedError{
 			Op:  op,
@@ -165,7 +170,7 @@ func (r *AlbumRepository) List(
 	return albums, nil
 }
 
-// Search - возвращает испольнителей по имени
+// Search - возвращает альбом по называни.
 func (r *AlbumRepository) Search(
 	ctx context.Context,
 	pattern string,
@@ -178,12 +183,13 @@ func (r *AlbumRepository) Search(
 					mbid, lastfm_url, cover_blob_id, total_tracks, is_complete,
 					enrich_status, enriched_at, created_at, updated_at
 		FROM albums
-		WHERE name LIKE $1 OR sort_name LIKE $1 
+		WHERE title LIKE $1 OR norm_title LIKE $1 
 		ORDER BY norm_title
 		LIMIT $2 OFFSET $3`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var albums []domain.Album
-	err := r.db.SelectContext(ctx, &albums, query, pattern, limit, offset)
+	err := exec.SelectContext(ctx, &albums, query, pattern, limit, offset)
 	if err != nil {
 		return nil, &domain.WrappedError{
 			Op:  op,
