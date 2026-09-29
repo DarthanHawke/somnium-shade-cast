@@ -20,9 +20,9 @@ func NewArtistRepository(db *Database) *ArtistRepository {
 	}
 }
 
-// Create - создает нового исполнителя
-func (r *ArtistRepository) Create(ctx context.Context, artist *domain.Artist) error {
-	const op = "artist.Create"
+// Insert - вставка нового исполнителя
+func (r *ArtistRepository) Insert(ctx context.Context, artist *domain.Artist) error {
+	const op = "artist.Insert"
 
 	const query = `
 		INSERT INTO artists (public_id, name, norm_name, sort_name, mbid, lastfm_url, 
@@ -30,7 +30,8 @@ func (r *ArtistRepository) Create(ctx context.Context, artist *domain.Artist) er
 		VALUES (:public_id, :name, :norm_name, :sort_name, :mbid, :lastfm_url, 
 					:image_blob_id, :bio, :enrich_status, :enriched_at, :created_at, :updated_at)`
 
-	res, err := r.db.NamedExecContext(ctx, query, artist)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.NamedExecContext(ctx, query, artist)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return domain.ErrAlreadyExists
@@ -57,8 +58,9 @@ func (r *ArtistRepository) GetByPublicID(
 					bio, enrich_status, enriched_at, created_at, updated_at
 		FROM artists WHERE public_id = $1`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var artist domain.Artist
-	err := r.db.GetContext(ctx, &artist, query, publicID)
+	err := exec.GetContext(ctx, &artist, query, publicID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -82,7 +84,8 @@ func (r *ArtistRepository) Update(ctx context.Context, artist *domain.Artist) er
 			enrich_status = :enrich_status, enriched_at = :enriched_at, updated_at = :updated_at
 		WHERE public_id = :public_id`
 
-	result, err := r.db.NamedExecContext(ctx, query, artist)
+	exec := r.db.ExecutorFromCtx(ctx)
+	result, err := exec.NamedExecContext(ctx, query, artist)
 	if err != nil {
 		return &domain.WrappedError{
 			Op:  op,
@@ -105,12 +108,13 @@ func (r *ArtistRepository) Update(ctx context.Context, artist *domain.Artist) er
 }
 
 // Delete - хард удаление исполнителя
-func (r *ArtistRepository) Delete(ctx context.Context, tx *sql.Tx, publicID domain.PublicID) error {
+func (r *ArtistRepository) Delete(ctx context.Context, publicID domain.PublicID) error {
 	const op = "artist.Delete"
 
 	const query = `DELETE FROM artists WHERE public_id = $1`
 
-	res, err := tx.ExecContext(ctx, query, publicID)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.ExecContext(ctx, query, publicID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrNotFound
@@ -149,8 +153,9 @@ func (r *ArtistRepository) List(
 		ORDER BY sort_name
 		LIMIT $1 OFFSET $2`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var artists []domain.Artist
-	err := r.db.SelectContext(ctx, &artists, query, limit, offset)
+	err := exec.SelectContext(ctx, &artists, query, limit, offset)
 	if err != nil {
 		return nil, &domain.WrappedError{
 			Op:  op,
@@ -176,8 +181,9 @@ func (r *ArtistRepository) Search(
 		ORDER BY sort_name
 		LIMIT $2 OFFSET $3`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var artists []domain.Artist
-	err := r.db.SelectContext(ctx, &artists, pattern, query, limit, offset)
+	err := exec.SelectContext(ctx, &artists, pattern, query, limit, offset)
 	if err != nil {
 		return nil, &domain.WrappedError{
 			Op:  op,

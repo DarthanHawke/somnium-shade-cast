@@ -7,7 +7,6 @@ import (
 	"errors"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
-	"github.com/jmoiron/sqlx"
 )
 
 // UserRepository реализует методы для работы с пользователями
@@ -21,15 +20,16 @@ func NewUserRepository(db *Database) *UserRepository {
 	}
 }
 
-// Create - создает нового пользователя
-func (r *UserRepository) Create(ctx context.Context, user *domain.User) error {
-	const op = "user.Create"
+// Insert - вставка нового пользователя
+func (r *UserRepository) Insert(ctx context.Context, user *domain.User) error {
+	const op = "user.Insert"
 
 	const query = `
 		INSERT INTO users (public_id, name, display_name, role, avatar_blob_id, is_active, created_at)
 		VALUES (:public_id, :name, :display_name, :role, :avatar_blob_id, :is_active, :created_at)`
 
-	res, err := r.db.NamedExecContext(ctx, query, user)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.NamedExecContext(ctx, query, user)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return domain.ErrAlreadyExists
@@ -52,8 +52,9 @@ func (r *UserRepository) GetByPublicID(ctx context.Context, publicID domain.Publ
 		SELECT id, public_id, name, display_name, role, avatar_blob_id, is_active, created_at
 		FROM users WHERE public_id = $1`
 
+	exec := r.db.ExecutorFromCtx(ctx)
 	var user domain.User
-	err := r.db.GetContext(ctx, &user, query, publicID)
+	err := exec.GetContext(ctx, &user, query, publicID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -75,7 +76,8 @@ func (r *UserRepository) Deactivate(ctx context.Context, publicID domain.PublicI
 		SET is_active = 0 
 		WHERE public_id = $1`
 
-	result, err := r.db.ExecContext(ctx, query, string(publicID))
+	exec := r.db.ExecutorFromCtx(ctx)
+	result, err := exec.ExecContext(ctx, query, string(publicID))
 	if err != nil {
 		return &domain.WrappedError{
 			Op:  op,
@@ -106,7 +108,8 @@ func (r *UserRepository) Activate(ctx context.Context, publicID domain.PublicID)
 		SET is_active = 1 
 		WHERE public_id = $1`
 
-	result, err := r.db.ExecContext(ctx, query, string(publicID))
+	exec := r.db.ExecutorFromCtx(ctx)
+	result, err := exec.ExecContext(ctx, query, string(publicID))
 	if err != nil {
 		return &domain.WrappedError{
 			Op:  op,
@@ -129,12 +132,13 @@ func (r *UserRepository) Activate(ctx context.Context, publicID domain.PublicID)
 }
 
 // Delete - хард удаление пользователя
-func (r *UserRepository) Delete(ctx context.Context, tx *sqlx.Tx, publicID domain.PublicID) error {
+func (r *UserRepository) Delete(ctx context.Context, publicID domain.PublicID) error {
 	const op = "user.Delete"
 
 	const query = `DELETE FROM users WHERE public_id = $1`
 
-	res, err := tx.ExecContext(ctx, query, publicID)
+	exec := r.db.ExecutorFromCtx(ctx)
+	res, err := exec.ExecContext(ctx, query, publicID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.ErrNotFound

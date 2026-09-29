@@ -3,6 +3,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/jmoiron/sqlx"
@@ -11,6 +12,16 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// Executor - общий интерфейс для sqlx.db и sqlx.tx
+type Executor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryxContext(ctx context.Context, query string, args ...any) (*sqlx.Rows, error)
+	QueryRowxContext(ctx context.Context, query string, args ...any) *sqlx.Row
+	GetContext(ctx context.Context, dest any, query string, args ...any) error
+	SelectContext(ctx context.Context, dest any, query string, args ...any) error
+	NamedExecContext(ctx context.Context, query string, arg any) (sql.Result, error)
+}
 
 // Database - обёртка для sqlx.DB
 type Database struct {
@@ -63,9 +74,38 @@ func (db *Database) Close() error {
 	return nil
 }
 
+type txKey struct{}
+
+// withTx кладёт транзакцию в контекст
+func withTx(ctx context.Context, tx *sqlx.Tx) context.Context {
+	return context.WithValue(ctx, txKey{}, tx)
+}
+
+// txFromCtx достаёт транзакцию из контекста (или nil)
+func txFromCtx(ctx context.Context) *sqlx.Tx {
+	if tx, ok := ctx.Value(txKey{}).(*sqlx.Tx); ok {
+		return tx
+	}
+	return nil
+}
+
+// ExecutorFromCtx возвращает транзакцию, если она есть в контексте,
+// иначе - обычное соединение
+func (db *Database) ExecutorFromCtx(ctx context.Context) Executor {
+	if tx := txFromCtx(ctx); tx != nil {
+		return tx
+	}
+	return db.DB
+}
+
 // WithTransaction выполняет функцию в транзакции.
 // Автоматически коммитит при успехе, откат при ошибке.
-func (db *Database) WithTransaction(ctx context.Context, fn func(*sqlx.Tx) error) error {
+func (db *Database) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	// Если уже внутри транзакции - просто выполняем fn с тем же ctx
+	if txFromCtx(ctx) != nil {
+		return fn(ctx)
+	}
+
 	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
@@ -77,7 +117,7 @@ func (db *Database) WithTransaction(ctx context.Context, fn func(*sqlx.Tx) error
 		}
 	}()
 
-	if err := fn(tx); err != nil {
+	if err := fn(withTx(ctx, tx)); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
