@@ -1,59 +1,37 @@
 basePath: /
 definitions:
-  domain.CreateUserRequest:
-    properties:
-      display_name:
-        example: Example Example
-        type: string
-      name:
-        example: example
-        type: string
-    type: object
-  domain.ErrorResponse:
-    properties:
-      code:
-        example: VALIDATION_ERROR
-        type: string
-      details:
-        type: string
-      error:
-        example: invalid request
-        type: string
-    type: object
-  domain.GetUserResponse:
-    properties:
-      created_at:
-        example: 1735689600000
-        type: integer
-      display_name:
-        example: John Doe
-        type: string
-      is_active:
-        example: true
-        type: boolean
-      name:
-        example: johndoe
-        type: string
-      public_id:
-        example: 01H2XJZ9K8F7D6E5C4B3A2Z1Y
-        type: string
-      role:
-        allOf:
-        - $ref: '#/definitions/domain.Role'
-        example: member
-    type: object
-  domain.Role:
-    enum:
-    - admin
-    - member
-    type: string
-    x-enum-varnames:
-    - RoleAdmin
-    - RoleMember
-  domain.SuccessResponse:
+  dto.SuccessResponse:
     properties:
       message:
-        example: operation completed successfully
+        type: string
+    type: object
+  dto.UserRequest:
+    properties:
+      display_name:
+        type: string
+      name:
+        type: string
+    type: object
+  dto.UserResponse:
+    properties:
+      created_at:
+        type: integer
+      display_name:
+        type: string
+      is_active:
+        type: boolean
+      name:
+        type: string
+      public_id:
+        type: string
+      role:
+        type: string
+    type: object
+  respond.ErrorBody:
+    properties:
+      error:
+        type: string
+      field:
         type: string
     type: object
 host: localhost:8080
@@ -74,26 +52,28 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/domain.CreateUserRequest'
+          $ref: '#/definitions/dto.UserRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Пользователь создан
           schema:
-            $ref: '#/definitions/domain.GetUserResponse'
+            $ref: '#/definitions/dto.UserResponse'
         "400":
-          description: Неверный запрос
+          description: Невалидный JSON или поля
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "409":
           description: Пользователь уже существует
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "500":
-          description: Внутренняя ошибка сервера
+          description: Внутренняя ошибка
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
       summary: Создать пользователя
       tags:
       - Users
@@ -112,25 +92,26 @@ paths:
         "200":
           description: Пользователь найден
           schema:
-            $ref: '#/definitions/domain.GetUserResponse'
+            $ref: '#/definitions/dto.UserResponse'
         "400":
           description: Неверный ID
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "404":
           description: Пользователь не найден
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "500":
           description: Внутренняя ошибка сервера
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
       summary: Получить пользователя
       tags:
       - Users
   /users/{publicID}/activate:
     post:
-      description: Активирует ранее деактивированного пользователя
       parameters:
       - description: ID пользователя
         in: path
@@ -143,25 +124,26 @@ paths:
         "200":
           description: Пользователь активирован
           schema:
-            $ref: '#/definitions/domain.SuccessResponse'
+            $ref: '#/definitions/dto.SuccessResponse'
         "400":
           description: Неверный ID
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "404":
           description: Пользователь не найден
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "500":
           description: Внутренняя ошибка сервера
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
       summary: Активировать пользователя
       tags:
       - Users
   /users/{publicID}/deactivate:
     post:
-      description: Деактивирует пользователя
       parameters:
       - description: ID пользователя
         in: path
@@ -174,25 +156,28 @@ paths:
         "200":
           description: Пользователь деактивирован
           schema:
-            $ref: '#/definitions/domain.SuccessResponse'
+            $ref: '#/definitions/dto.SuccessResponse'
         "400":
           description: Неверный ID
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "404":
           description: Пользователь не найден
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
         "500":
           description: Внутренняя ошибка сервера
           schema:
-            $ref: '#/definitions/domain.ErrorResponse'
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
       summary: Деактивировать пользователя
       tags:
       - Users
 securityDefinitions:
-  CookieAuth:
-    in: cookie
-    name: session_id
+  DevAuth:
+    description: Публичный ULID активного пользователя для локального режима разработки.
+    in: header
+    name: X-User
     type: apiKey
 swagger: "2.0"

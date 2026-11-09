@@ -1,9 +1,7 @@
 package domain
 
 import (
-	"strings"
 	"time"
-	"unicode"
 )
 
 type EnrichStatus string
@@ -33,16 +31,18 @@ type Artist struct {
 
 func NewArtist(name string) (*Artist, error) {
 	if name == "" {
-		return nil, Invalid("title", "required")
+		return nil, Invalid("name", "required")
 	}
+	timeNow := UnixTimeMillis(time.Now())
 
 	return &Artist{
 		PublicID:  NewPublicID(),
 		Name:      name,
 		NormName:  Normalize(name),
 		SortName:  NormalizeSort(name),
-		CreatedAt: UnixTimeMillis(time.Now()),
-		UpdatedAt: UnixTimeMillis(time.Now()),
+		Enrich:    EnrichPending,
+		CreatedAt: timeNow,
+		UpdatedAt: timeNow,
 	}, nil
 }
 
@@ -69,6 +69,7 @@ func NewAlbum(artistID ID, title string, year *int, coverBlobID *ID) (*Album, er
 	if title == "" {
 		return nil, Invalid("title", "required")
 	}
+	timeNow := UnixTimeMillis(time.Now())
 
 	return &Album{
 		PublicID:    NewPublicID(),
@@ -77,97 +78,8 @@ func NewAlbum(artistID ID, title string, year *int, coverBlobID *ID) (*Album, er
 		NormTitle:   Normalize(title),
 		Year:        year,
 		CoverBlobID: coverBlobID,
-		CreatedAt:   UnixTimeMillis(time.Now()),
-		UpdatedAt:   UnixTimeMillis(time.Now()),
+		Enrich:      EnrichPending,
+		CreatedAt:   timeNow,
+		UpdatedAt:   timeNow,
 	}, nil
-}
-
-// артикли разных языков
-var articles = map[string][]string{
-	"en": {"the", "a", "an"},
-	"fr": {"le", "la", "les", "l'", "un", "une", "des"},
-	"de": {"der", "die", "das", "ein", "eine"},
-	"es": {"el", "la", "los", "las", "un", "una", "unos", "unas"},
-	"it": {"il", "lo", "la", "i", "gli", "le", "l'", "un", "uno", "una"},
-	"pt": {"o", "a", "os", "as", "um", "uma", "uns", "umas"},
-	"nl": {"de", "het", "een"},
-}
-
-// Normalize -  возвращает строку в нижнем регистре, слова через "_"
-func Normalize(s string) string {
-	s = strings.ToLower(s)
-
-	var words []string
-	var currentWord strings.Builder
-
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' {
-			currentWord.WriteRune(r)
-		} else if currentWord.Len() > 0 {
-			words = append(words, currentWord.String())
-			currentWord.Reset()
-		}
-	}
-
-	if currentWord.Len() > 0 {
-		words = append(words, currentWord.String())
-	}
-
-	articleMap := make(map[string]bool)
-	for _, langArticles := range articles {
-		for _, art := range langArticles {
-			articleMap[strings.ToLower(art)] = true
-		}
-	}
-
-	var filtered []string
-	for _, word := range words {
-		if !articleMap[word] {
-			filtered = append(filtered, word)
-		}
-	}
-
-	return strings.Join(filtered, "_")
-}
-
-// normalizeSort - нормализация для сортировки
-// "The Beatles" - "Beatles, The"
-func NormalizeSort(s string) string {
-	s = strings.TrimSpace(s)
-
-	var allArticles []string
-	for _, langArticles := range articles {
-		for _, art := range langArticles {
-			allArticles = append(allArticles, art)
-		}
-	}
-
-	sortArticlesByLength(allArticles)
-
-	lowerS := strings.ToLower(s)
-
-	for _, article := range allArticles {
-		lowerArticle := strings.ToLower(article)
-		if strings.HasPrefix(lowerS, lowerArticle+" ") {
-			rest := strings.TrimSpace(s[len(article):])
-			return rest + ", " + strings.TrimSpace(article)
-		}
-	}
-
-	words := strings.Fields(s)
-	if len(words) > 1 {
-		return words[len(words)-1] + ", " + strings.Join(words[:len(words)-1], " ")
-	}
-	return s
-}
-
-// sortArticlesByLength - сортировка артиклей по длине
-func sortArticlesByLength(articles []string) {
-	for i := range articles {
-		for j := i + 1; j < len(articles); j++ {
-			if len(articles[i]) < len(articles[j]) {
-				articles[i], articles[j] = articles[j], articles[i]
-			}
-		}
-	}
 }

@@ -1,4 +1,3 @@
-// Пакет sqlite реализовывает работу с базами данных
 package sqlite
 
 import (
@@ -13,7 +12,7 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Migrate доводит схему БД до актуальной версии
+// Migrate применяет встроенные миграции и доводит схему БД до актуальной версии.
 func (db *Database) Migrate(ctx context.Context) error {
 	migrateFS, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
@@ -29,18 +28,13 @@ func (db *Database) Migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate: init provider: %w", err)
 	}
 
-	results, err := provider.Up(ctx)
-	if err != nil {
+	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("migrate: up: %w", err)
-	}
-
-	for _, r := range results {
-		fmt.Printf("migration applied: %s (%s)\n", r.Source.Path, r.Duration)
 	}
 	return nil
 }
 
-// MigrationStatus — для админ-эндпоинта /admin/status и диагностики
+// MigrationStatus возвращает текущую версию схемы БД по данным goose.
 func (db *Database) MigrationStatus(ctx context.Context) (current int64, err error) {
 	migrateFS, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {

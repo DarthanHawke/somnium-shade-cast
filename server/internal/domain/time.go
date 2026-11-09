@@ -3,13 +3,16 @@ package domain
 import (
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"time"
 )
 
+// UnixTimeMillis представляет момент времени.
+// В SQL хранится целым числом миллисекунд с начала эпохи Unix.
 type UnixTimeMillis time.Time
 
 func NewUnixTimeMillis(millis int64) UnixTimeMillis {
-	return UnixTimeMillis(time.Unix(millis/1000, (millis%1000)*int64(time.Millisecond)))
+	return UnixTimeMillis(time.UnixMilli(millis).UTC())
 }
 
 func (ut *UnixTimeMillis) Scan(value any) error {
@@ -18,14 +21,18 @@ func (ut *UnixTimeMillis) Scan(value any) error {
 		return err
 	}
 
-	*ut = UnixTimeMillis(time.Unix(v.Int64/1000, (v.Int64%1000)*int64(time.Millisecond)))
+	if !v.Valid {
+		return fmt.Errorf("UnixTimeMillis: unexpected SQL NULL")
+	}
+
+	*ut = NewUnixTimeMillis(v.Int64)
 	return nil
 }
 
 func (ut UnixTimeMillis) Value() (driver.Value, error) {
-	return int64(time.Time(ut).Unix() * 1000), nil
+	return ut.UnixMilli(), nil
 }
 
 func (ut UnixTimeMillis) UnixMilli() int64 {
-	return time.Time(ut).Unix() * 1000
+	return time.Time(ut).UnixMilli()
 }

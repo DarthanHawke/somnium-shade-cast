@@ -1,20 +1,21 @@
-// Пакет sqlite реализовывает работу с sqlite
+// Package sqlite реализует хранение пользователей, музыкальной библиотеки
+// и метаданных блобов в SQLite.
+// Репозитории используют транзакцию из контекста, если она задана.
 package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
-
-	"fmt"
 
 	_ "modernc.org/sqlite"
 )
 
-// Executor - общий интерфейс для sqlx.db и sqlx.tx
-type Executor interface {
+// executor объединяет операции sqlx.DB и sqlx.Tx, необходимые репозиториям.
+type executor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryxContext(ctx context.Context, query string, args ...any) (*sqlx.Rows, error)
 	QueryRowxContext(ctx context.Context, query string, args ...any) *sqlx.Row
@@ -23,50 +24,70 @@ type Executor interface {
 	NamedExecContext(ctx context.Context, query string, arg any) (sql.Result, error)
 }
 
-// Database - обёртка для sqlx.DB
+// Database управляет пулом соединений с SQLite и предоставляет операции миграции схемы.
 type Database struct {
 	*sqlx.DB
 }
 
-// New создаёт новое подключение к БД
+// Open открывает БД по dsn и настраивает соединения для работы с SQLite.
+// Включает WAL и проверку внешних ключей.
+// При ошибке инициализации закрывает созданный пул соединений.
+// После использования возвращённую БД следует закрыть вызовом Close.
 func Open(dsn string) (*Database, error) {
-	// Открываем БД
-	db, err := sqlx.Connect("sqlite", dsn)
+	conn, err := sqlx.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Параметры соединения
+	db := &Database{DB: conn}
+
+	if err := db.initialize(); err != nil {
+		closeErr := db.Close()
+		if closeErr != nil {
+			closeErr = fmt.Errorf(
+				"close database after initialization failure: %w",
+				closeErr,
+			)
+		}
+
+		return nil, errors.Join(err, closeErr)
+	}
+
+	return db, nil
+}
+
+// initialize проверяет подключение и задаёт параметры соединений SQLite.
+func (db *Database) initialize() error {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
-	// Проверяем соединение
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return fmt.Errorf("ping database: %w", err)
 	}
 
-	// Используем Write-Ahead Logging для сохранения изменений перед записью в бд
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return nil, fmt.Errorf("failed to enable Write-Ahead Logging: %v", err)
-	}
-	// Включаем проверку внешних ключей для согласованности данных
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return nil, fmt.Errorf("failed to enable foreign keys: %v", err)
-	}
-	// Добавляем паузы с ретраем при блокировке бд
+	// Настраиваем ожидание блокировок до остальных PRAGMA.
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		return nil, fmt.Errorf("failed to enable busy timeout: %v", err)
-	}
-	// Т.к. используем WAL, то для целостности хватит нормал
-	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
-		return nil, fmt.Errorf("failed to enable normal synchronous: %v", err)
+		return fmt.Errorf("set busy timeout: %w", err)
 	}
 
-	return &Database{db}, nil
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return fmt.Errorf("enable Write-Ahead Logging: %w", err)
+	}
+
+	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		return fmt.Errorf("enable foreign keys: %w", err)
+	}
+
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		return fmt.Errorf("set synchronous mode: %w", err)
+	}
+
+	return nil
 }
 
-// Close закрывает подключение к БД
+// Close закрывает пул соединений с БД.
+// Для nil или неинициализированного Database возвращает nil.
 func (db *Database) Close() error {
 	if db != nil && db.DB != nil {
 		return db.DB.Close() // Закрываем базовый sqlx.DB
@@ -74,67 +95,11 @@ func (db *Database) Close() error {
 	return nil
 }
 
-type txKey struct{}
-
-// withTx кладёт транзакцию в контекст
-func withTx(ctx context.Context, tx *sqlx.Tx) context.Context {
-	return context.WithValue(ctx, txKey{}, tx)
-}
-
-// txFromCtx достаёт транзакцию из контекста (или nil)
-func txFromCtx(ctx context.Context) *sqlx.Tx {
-	if tx, ok := ctx.Value(txKey{}).(*sqlx.Tx); ok {
-		return tx
-	}
-	return nil
-}
-
-// ExecutorFromCtx возвращает транзакцию, если она есть в контексте,
-// иначе - обычное соединение
-func (db *Database) ExecutorFromCtx(ctx context.Context) Executor {
-	if tx := txFromCtx(ctx); tx != nil {
+// executor возвращает транзакцию из ctx, если она задана,
+// или пул соединений db.DB.
+func (db *Database) executor(ctx context.Context) executor {
+	if tx := txFromContext(ctx); tx != nil {
 		return tx
 	}
 	return db.DB
-}
-
-// WithTransaction выполняет функцию в транзакции.
-// Автоматически коммитит при успехе, откат при ошибке.
-func (db *Database) WithTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
-	// Если уже внутри транзакции - просто выполняем fn с тем же ctx
-	if txFromCtx(ctx) != nil {
-		return fn(ctx)
-	}
-
-	tx, err := db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if p := recover(); p != nil { // перехватываем panic
-			_ = tx.Rollback()
-			panic(p) // пробрасываем panic дальше после отката
-		}
-	}()
-
-	if err := fn(withTx(ctx, tx)); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-	return nil
-}
-
-// isUniqueViolation - возвращает ошибки с кодами SQLite
-func isUniqueViolation(err error) bool {
-	// код 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
-	type coder interface{ Code() int }
-	var c coder
-	if errors.As(err, &c) {
-		return c.Code() == 2067 || c.Code() == 1555
-	}
-	return false
 }

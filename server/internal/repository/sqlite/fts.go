@@ -1,4 +1,3 @@
-// internal/repository/sqlite/search.go
 package sqlite
 
 import (
@@ -7,11 +6,12 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
-// BlobRepository реализует методы для работы с fts для треков
+// SearchRepository поддерживает полнотекстовый индекс треков FTS5.
 type SearchRepository struct {
 	db *Database
 }
 
+// NewSearchRepository создаёт репозиторий, использующий db.
 func NewSearchRepository(db *Database) *SearchRepository {
 	return &SearchRepository{
 		db: db,
@@ -20,74 +20,59 @@ func NewSearchRepository(db *Database) *SearchRepository {
 
 const deleteFTSTrack = "delete"
 
-// Insert добавляет запись в FTS(без удаления существующей, т.е. только для новых)
-func (r *SearchRepository) Insert(ctx context.Context, trackID domain.ID, title, artist, album string) error {
+// Insert добавляет в полнотекстовый индекс название трека,
+// имя исполнителя и название альбома для trackID.
+func (r *SearchRepository) Insert(
+	ctx context.Context,
+	trackID domain.ID,
+	title, artistName, albumTitle string,
+) error {
 	const op = "fts.Insert"
 	const query = `
 		INSERT INTO tracks_fts(rowid, title, artist_name, album_title)
         VALUES ($1, $2, $3, $4)`
 
-	exec := r.db.ExecutorFromCtx(ctx)
-	if _, err := exec.ExecContext(ctx, query, trackID, title, artist, album); err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+	exec := r.db.executor(ctx)
+	if _, err := exec.ExecContext(ctx, query, trackID, title, artistName, albumTitle); err != nil {
+		return wrapDBError(op, err)
 	}
 	return nil
 }
 
-// Remove удаляет запись в FTS
-func (r *SearchRepository) Remove(ctx context.Context, trackID domain.ID, title, artist, album string) error {
+// Remove удаляет запись трека из полнотекстового индекса.
+// title, artistName и albumTitle должны соответствовать значениям,
+// использованным при индексации.
+func (r *SearchRepository) Remove(
+	ctx context.Context,
+	trackID domain.ID,
+	title, artistName, albumTitle string,
+) error {
 	const op = "fts.Remove"
+	// В contentless-таблице FTS5 запись удаляется через INSERT.
 	const query = `
 		INSERT INTO tracks_fts(tracks_fts, rowid, title, artist_name, album_title)
         VALUES ($1, $2, $3, $4, $5)`
 
-	exec := r.db.ExecutorFromCtx(ctx)
-	if _, err := exec.ExecContext(ctx, query, deleteFTSTrack, trackID, title, artist, album); err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+	exec := r.db.executor(ctx)
+	if _, err := exec.ExecContext(ctx, query, deleteFTSTrack, trackID, title, artistName, albumTitle); err != nil {
+		return wrapDBError(op, err)
 	}
 
 	return nil
 }
 
-// Index обновляет запись в FTS
-func (r *SearchRepository) Update(ctx context.Context, trackID domain.ID, title, artist, album string) error {
-	const op = "fts.Update"
-
-	if err := r.Remove(ctx, trackID, title, artist, album); err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
-	}
-	if err := r.Insert(ctx, trackID, title, artist, album); err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
-	}
-	return nil
-}
-
-// Search ищет треки по запросу
-func (r *SearchRepository) Search(ctx context.Context, req string, limit int) ([]domain.ID, error) {
+// Search возвращает внутренние идентификаторы треков, соответствующих выражению FTS5 expression.
+// Возвращает не более limit результатов. Порядок результатов не определён.
+func (r *SearchRepository) Search(ctx context.Context, expression string, limit int) ([]domain.ID, error) {
 	const op = "fts.Search"
 	const query = `
 		SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH $1 LIMIT $2`
 
-	exec := r.db.ExecutorFromCtx(ctx)
+	exec := r.db.executor(ctx)
 	var ids []domain.ID
-	err := exec.SelectContext(ctx, &ids, query, req, limit)
+	err := exec.SelectContext(ctx, &ids, query, expression, limit)
 	if err != nil {
-		return nil, &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return nil, wrapDBError(op, err)
 	}
 	return ids, nil
 }

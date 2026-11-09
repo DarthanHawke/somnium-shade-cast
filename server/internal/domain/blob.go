@@ -3,9 +3,7 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"io"
-	"path/filepath"
 	"time"
 )
 
@@ -28,11 +26,11 @@ func (k BlobKind) Valid() bool {
 const (
 	DefaultChunkSize = 128 * 1024 // 128 КБ
 
-	// GCMOverhead - расходы AES-GCM на один чанк:
-	// 12 байт nonce + 16 байт auth tag.
 	GCMNonceSize = 12
 	GCMTagSize   = 16
-	GCMOverhead  = GCMNonceSize + GCMTagSize
+	// GCMOverhead - расходы AES-GCM на один чанк:
+	// 12 байт nonce + 16 байт auth tag.
+	GCMOverhead = GCMNonceSize + GCMTagSize
 
 	EncAlgoAESGCM = "aes-256-gcm"
 )
@@ -55,7 +53,7 @@ type Blob struct {
 
 // NewBlob - конструктор
 func NewBlob(shaPlain string, sizePlain, sizeEnc int64, mime string, kind BlobKind,
-	wrappedKey []byte, masterKeyID string, chunkSize int) (*Blob, error) {
+	wrappedKey []byte, masterKeyID string, chunkSize int, storagePath string) (*Blob, error) {
 
 	if len(shaPlain) != 64 { // hex sha256
 		return nil, Invalid("sha256_plain", "must be 64 hex chars")
@@ -88,15 +86,10 @@ func NewBlob(shaPlain string, sizePlain, sizeEnc int64, mime string, kind BlobKi
 		EncKeyWrapped: wrappedKey,
 		MasterKeyID:   masterKeyID,
 		ChunkSize:     chunkSize,
-		StoragePath:   StoragePathFor(shaPlain),
+		StoragePath:   storagePath,
 		RefCount:      0,
 		CreatedAt:     UnixTimeMillis(time.Now()),
 	}, nil
-}
-
-// StoragePathFor - относительный путь из хэша
-func StoragePathFor(shaPlain string) string {
-	return filepath.Join(shaPlain[0:2], shaPlain[2:4], shaPlain+".enc")
 }
 
 // NumChunks - количество чанков в файле
@@ -110,7 +103,7 @@ func (b *Blob) encChunkSize() int64 {
 	return int64(b.ChunkSize) + GCMOverhead
 }
 
-// PlainChunkLen - сколько plaintext-байт в последнем чанке idx
+// PlainChunkLen - сколько plaintext-байт в чанке idx
 func (b *Blob) PlainChunkLen(idx int64) int64 {
 	cs := int64(b.ChunkSize)
 	if idx < b.NumChunks()-1 {
@@ -134,14 +127,16 @@ type ByteRange struct {
 	Length int64 // > 0
 }
 
-// ResolveRange валидирует HTTP Range
+// ResolveRange возвращает диапазон в расшифрованных данных блоба.
+// При length <= 0 диапазон продолжается до конца данных.
 func (b *Blob) ResolveRange(offset, length int64) (ByteRange, error) {
 	if offset < 0 || offset >= b.SizePlain {
-		return ByteRange{}, fmt.Errorf("range start %d out of [0,%d): %w",
-			offset, b.SizePlain, ErrInvalidInput)
+		return ByteRange{}, ErrRangeNotSatisfiable
 	}
-	if length <= 0 || offset+length > b.SizePlain {
-		length = b.SizePlain - offset
+
+	remaining := b.SizePlain - offset
+	if length <= 0 || length > remaining {
+		length = remaining
 	}
 	return ByteRange{Offset: offset, Length: length}, nil
 }

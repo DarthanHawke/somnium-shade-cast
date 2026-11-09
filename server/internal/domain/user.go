@@ -43,6 +43,7 @@ type User struct {
 	CreatedAt    UnixTimeMillis `db:"created_at"`
 }
 
+// NewUser создаёт активного пользователя. Если displayName пусто, использует name.
 func NewUser(name, displayName string, role Role) (*User, error) {
 	if name == "" {
 		return nil, Invalid("name", "required")
@@ -61,20 +62,4 @@ func NewUser(name, displayName string, role Role) (*User, error) {
 		IsActive:    true,
 		CreatedAt:   UnixTimeMillis(time.Now()),
 	}, nil
-}
-
-// CreateUserRequest - запрос на создание пользователя
-type CreateUserRequest struct {
-	Name        string `json:"name" example:"example"`
-	DisplayName string `json:"display_name,omitempty" example:"Example Example"`
-}
-
-// GetUserResponse - ответ с данными пользователя
-type GetUserResponse struct {
-	PublicID    PublicID `json:"public_id" example:"01H2XJZ9K8F7D6E5C4B3A2Z1Y"`
-	Name        string   `json:"name" example:"johndoe"`
-	DisplayName string   `json:"display_name" example:"John Doe"`
-	Role        Role     `json:"role" example:"member"`
-	IsActive    bool     `json:"is_active" example:"true"`
-	CreatedAt   int64    `json:"created_at" example:"1735689600000"`
 }
