@@ -17,6 +17,11 @@ const docTemplate = `{
     "paths": {
         "/users": {
             "post": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
                 "description": "Создаёт нового пользователя с указанными данными",
                 "consumes": [
                     "application/json"
@@ -35,7 +40,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.CreateUserRequest"
+                            "$ref": "#/definitions/dto.UserRequest"
                         }
                     }
                 ],
@@ -43,25 +48,25 @@ const docTemplate = `{
                     "201": {
                         "description": "Пользователь создан",
                         "schema": {
-                            "$ref": "#/definitions/domain.GetUserResponse"
+                            "$ref": "#/definitions/dto.UserResponse"
                         }
                     },
                     "400": {
-                        "description": "Неверный запрос",
+                        "description": "Невалидный JSON или поля",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "409": {
                         "description": "Пользователь уже существует",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "500": {
-                        "description": "Внутренняя ошибка сервера",
+                        "description": "Внутренняя ошибка",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     }
                 }
@@ -69,6 +74,11 @@ const docTemplate = `{
         },
         "/users/{publicID}": {
             "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
                 "description": "Возвращает информацию о пользователе по его ID",
                 "produces": [
                     "application/json"
@@ -90,25 +100,25 @@ const docTemplate = `{
                     "200": {
                         "description": "Пользователь найден",
                         "schema": {
-                            "$ref": "#/definitions/domain.GetUserResponse"
+                            "$ref": "#/definitions/dto.UserResponse"
                         }
                     },
                     "400": {
                         "description": "Неверный ID",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "404": {
                         "description": "Пользователь не найден",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "500": {
                         "description": "Внутренняя ошибка сервера",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     }
                 }
@@ -116,7 +126,11 @@ const docTemplate = `{
         },
         "/users/{publicID}/activate": {
             "post": {
-                "description": "Активирует ранее деактивированного пользователя",
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -137,25 +151,25 @@ const docTemplate = `{
                     "200": {
                         "description": "Пользователь активирован",
                         "schema": {
-                            "$ref": "#/definitions/domain.SuccessResponse"
+                            "$ref": "#/definitions/dto.SuccessResponse"
                         }
                     },
                     "400": {
                         "description": "Неверный ID",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "404": {
                         "description": "Пользователь не найден",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "500": {
                         "description": "Внутренняя ошибка сервера",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     }
                 }
@@ -163,7 +177,11 @@ const docTemplate = `{
         },
         "/users/{publicID}/deactivate": {
             "post": {
-                "description": "Деактивирует пользователя",
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -184,25 +202,25 @@ const docTemplate = `{
                     "200": {
                         "description": "Пользователь деактивирован",
                         "schema": {
-                            "$ref": "#/definitions/domain.SuccessResponse"
+                            "$ref": "#/definitions/dto.SuccessResponse"
                         }
                     },
                     "400": {
                         "description": "Неверный ID",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "404": {
                         "description": "Пользователь не найден",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     },
                     "500": {
                         "description": "Внутренняя ошибка сервера",
                         "schema": {
-                            "$ref": "#/definitions/domain.ErrorResponse"
+                            "$ref": "#/definitions/respond.ErrorBody"
                         }
                     }
                 }
@@ -210,94 +228,66 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "domain.CreateUserRequest": {
-            "type": "object",
-            "properties": {
-                "display_name": {
-                    "type": "string",
-                    "example": "Example Example"
-                },
-                "name": {
-                    "type": "string",
-                    "example": "example"
-                }
-            }
-        },
-        "domain.ErrorResponse": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "example": "VALIDATION_ERROR"
-                },
-                "details": {
-                    "type": "string"
-                },
-                "error": {
-                    "type": "string",
-                    "example": "invalid request"
-                }
-            }
-        },
-        "domain.GetUserResponse": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "integer",
-                    "example": 1735689600000
-                },
-                "display_name": {
-                    "type": "string",
-                    "example": "John Doe"
-                },
-                "is_active": {
-                    "type": "boolean",
-                    "example": true
-                },
-                "name": {
-                    "type": "string",
-                    "example": "johndoe"
-                },
-                "public_id": {
-                    "type": "string",
-                    "example": "01H2XJZ9K8F7D6E5C4B3A2Z1Y"
-                },
-                "role": {
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/domain.Role"
-                        }
-                    ],
-                    "example": "member"
-                }
-            }
-        },
-        "domain.Role": {
-            "type": "string",
-            "enum": [
-                "admin",
-                "member"
-            ],
-            "x-enum-varnames": [
-                "RoleAdmin",
-                "RoleMember"
-            ]
-        },
-        "domain.SuccessResponse": {
+        "dto.SuccessResponse": {
             "type": "object",
             "properties": {
                 "message": {
-                    "type": "string",
-                    "example": "operation completed successfully"
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UserRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UserResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "public_id": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "respond.ErrorBody": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "field": {
+                    "type": "string"
                 }
             }
         }
     },
     "securityDefinitions": {
-        "CookieAuth": {
+        "DevAuth": {
+            "description": "Публичный ULID активного пользователя для локального режима разработки.",
             "type": "apiKey",
-            "name": "session_id",
-            "in": "cookie"
+            "name": "X-User",
+            "in": "header"
         }
     }
 }`

@@ -2,53 +2,56 @@ package storage
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
-// encryptTo читает plaintext из src,
-// пишет шифрованные чанки в dst. Возвращает размер записанного шифртекста.
+// encryptTo читает src и записывает в dst зашифрованные чанки.
+// При успехе возвращает размер шифртекста в байтах.
+// Не закрывает src и dst.
 func encryptTo(dst io.Writer, src io.Reader, dek []byte, chunkSize int) (int64, error) {
-	const op = "writer.encryptTo"
+	const op = "storage.encryptTo"
 
 	aead, err := dekAEAD(dek)
 	if err != nil {
-		return 0, &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return 0, err
 	}
 	bw := bufio.NewWriterSize(dst, chunkSize+domain.GCMOverhead)
-	buf := make([]byte, chunkSize)
+	br := bufio.NewReaderSize(src, chunkSize)
 	var sealed []byte
-	var encSize, idx int64
+	var encryptedSize, idx int64
 
 	for {
-		n, rerr := io.ReadFull(src, buf)
-		if n > 0 {
+		chunk, readErr := br.Peek(chunkSize)
+		if readErr != nil && readErr != io.EOF {
+			return encryptedSize, fmt.Errorf(
+				"%s: read source: %w: %w", op, domain.ErrIncomplete, readErr,
+			)
+		}
+
+		if len(chunk) > 0 {
 			nonce := chunkNonce(idx)
-			sealed = aead.Seal(sealed[:0], nonce, buf[:n], nonce)
-			bw.Write(nonce)
-			bw.Write(sealed)
-			encSize += int64(len(nonce) + len(sealed))
-			idx++
-		}
-		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
-			break
-		}
-		if rerr != nil {
-			return encSize, &domain.WrappedError{
-				Op:  op,
-				Err: rerr,
+			sealed = aead.Seal(sealed[:0], nonce, chunk, nonce)
+			if _, err := bw.Write(nonce); err != nil {
+				return encryptedSize, fmt.Errorf("%s: write nonce: %v", op, err)
 			}
+			if _, err := bw.Write(sealed); err != nil {
+				return encryptedSize, fmt.Errorf("%s: write sealed: %v", op, err)
+			}
+
+			encryptedSize += int64(len(nonce) + len(sealed))
+			idx++
+			_, _ = br.Discard(len(chunk))
+		}
+
+		if readErr == io.EOF {
+			break
 		}
 	}
 	if err := bw.Flush(); err != nil {
-		return encSize, &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return encryptedSize, fmt.Errorf("%s: flush: %v", op, err)
 	}
-	return encSize, nil
+	return encryptedSize, nil
 }

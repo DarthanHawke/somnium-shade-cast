@@ -1,4 +1,3 @@
-// Пакет sqlite реализовывает работу с sqlite
 package sqlite
 
 import (
@@ -9,18 +8,20 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
-// UserRepository реализует методы для работы с пользователями
+// UserRepository сохраняет и получает записи пользователей в SQLite.
 type UserRepository struct {
 	db *Database
 }
 
+// NewUserRepository создаёт репозиторий, использующий db.
 func NewUserRepository(db *Database) *UserRepository {
 	return &UserRepository{
 		db: db,
 	}
 }
 
-// Insert - вставка нового пользователя
+// Insert сохраняет пользователя и при успехе заполняет user.ID.
+// При нарушении уникальности возвращает domain.ErrConflict.
 func (r *UserRepository) Insert(ctx context.Context, user *domain.User) error {
 	const op = "user.Insert"
 
@@ -28,23 +29,24 @@ func (r *UserRepository) Insert(ctx context.Context, user *domain.User) error {
 		INSERT INTO users (public_id, name, display_name, role, avatar_blob_id, is_active, created_at)
 		VALUES (:public_id, :name, :display_name, :role, :avatar_blob_id, :is_active, :created_at)`
 
-	exec := r.db.ExecutorFromCtx(ctx)
-	res, err := exec.NamedExecContext(ctx, query, user)
+	exec := r.db.executor(ctx)
+	result, err := exec.NamedExecContext(ctx, query, user)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return domain.ErrAlreadyExists
+			return domain.ErrConflict
 		}
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
-	id, _ := res.LastInsertId()
-	user.ID = domain.NewID(id)
+	id, err := result.LastInsertId()
+	if err != nil {
+		return wrapDBError(op+": get inserted id", err)
+	}
+	user.ID = domain.ID(id)
 	return nil
 }
 
-// GetByPublicID - возвращает пользователя по ULID
+// GetByPublicID возвращает пользователя по публичному идентификатору domain.PublicID.
+// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 func (r *UserRepository) GetByPublicID(ctx context.Context, publicID domain.PublicID) (*domain.User, error) {
 	const op = "user.GetByPublicID"
 
@@ -52,22 +54,20 @@ func (r *UserRepository) GetByPublicID(ctx context.Context, publicID domain.Publ
 		SELECT id, public_id, name, display_name, role, avatar_blob_id, is_active, created_at
 		FROM users WHERE public_id = $1`
 
-	exec := r.db.ExecutorFromCtx(ctx)
+	exec := r.db.executor(ctx)
 	var user domain.User
 	err := exec.GetContext(ctx, &user, query, publicID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
 	if err != nil {
-		return nil, &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return nil, wrapDBError(op, err)
 	}
 	return &user, nil
 }
 
-// Deactivate - деактивирует пользователя (soft delete)
+// Deactivate помечает пользователя с publicID как неактивного, сохраняя его запись.
+// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 func (r *UserRepository) Deactivate(ctx context.Context, publicID domain.PublicID) error {
 	const op = "user.Deactivate"
 
@@ -76,21 +76,15 @@ func (r *UserRepository) Deactivate(ctx context.Context, publicID domain.PublicI
 		SET is_active = 0 
 		WHERE public_id = $1`
 
-	exec := r.db.ExecutorFromCtx(ctx)
+	exec := r.db.executor(ctx)
 	result, err := exec.ExecContext(ctx, query, string(publicID))
 	if err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 	if rowsAffected == 0 {
 		return domain.ErrNotFound
@@ -99,7 +93,8 @@ func (r *UserRepository) Deactivate(ctx context.Context, publicID domain.PublicI
 	return nil
 }
 
-// Activate - активирует пользователя
+// Activate помечает пользователя с publicID как активного.
+// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 func (r *UserRepository) Activate(ctx context.Context, publicID domain.PublicID) error {
 	const op = "user.Activate"
 
@@ -108,21 +103,15 @@ func (r *UserRepository) Activate(ctx context.Context, publicID domain.PublicID)
 		SET is_active = 1 
 		WHERE public_id = $1`
 
-	exec := r.db.ExecutorFromCtx(ctx)
+	exec := r.db.executor(ctx)
 	result, err := exec.ExecContext(ctx, query, string(publicID))
 	if err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 	if rowsAffected == 0 {
 		return domain.ErrNotFound
@@ -131,30 +120,23 @@ func (r *UserRepository) Activate(ctx context.Context, publicID domain.PublicID)
 	return nil
 }
 
-// Delete - хард удаление пользователя
+// Delete удаляет запись пользователя по publicID.
+// Связанные треки удаляются каскадно согласно схеме БД.
+// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 func (r *UserRepository) Delete(ctx context.Context, publicID domain.PublicID) error {
 	const op = "user.Delete"
 
 	const query = `DELETE FROM users WHERE public_id = $1`
 
-	exec := r.db.ExecutorFromCtx(ctx)
-	res, err := exec.ExecContext(ctx, query, publicID)
+	exec := r.db.executor(ctx)
+	result, err := exec.ExecContext(ctx, query, publicID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return domain.ErrNotFound
-		}
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 
-	rowsAffected, err := res.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return &domain.WrappedError{
-			Op:  op,
-			Err: err,
-		}
+		return wrapDBError(op, err)
 	}
 	if rowsAffected == 0 {
 		return domain.ErrNotFound

@@ -5,95 +5,63 @@ import (
 	"fmt"
 )
 
-// Error — доменная ошибка
-type Error struct {
-	Code    string
+// ValidationError — ошибка валидации с указанием поля
+type ValidationError struct {
+	Field   string
 	Message string
 }
 
-// Error - возвращает Error в виде строки
-func (e *Error) Error() string {
-	return fmt.Sprintf("%s: %s", e.Code, e.Message)
-}
-
-// ValidationError — ошибка валидации с указанием поля.
-type ValidationError struct {
-	Field string
-	Msg   string
-}
-
 func (e *ValidationError) Error() string {
-	return fmt.Sprintf("validation: %s: %s", e.Field, e.Msg)
+	return fmt.Sprintf("validation: %s: %s", e.Field, e.Message)
 }
 
-func IsInvalid(target error) bool {
-	return target == ErrInvalidInput
-}
-
-func Invalid(field, msg string) error {
+func Invalid(field, message string) error {
 	return &ValidationError{
-		Field: field,
-		Msg:   msg,
+		Field:   field,
+		Message: message,
 	}
 }
 
-// WrappedError — ошибка с контекстом операции.
-type WrappedError struct {
-	Op  string
-	Err error
-}
-
-// Error - возвращает WrappedError в виде строки
-func (e *WrappedError) Error() string {
-	if e.Err == nil {
-		return e.Op
-	}
-	return fmt.Sprintf("%s: %v", e.Op, e.Err)
-}
-
-// Unwrap - возвращает ошибку типа Error содержащуюся в WrappedError
-func (e *WrappedError) Unwrap() error {
-	return e.Err
-}
-
-// TerminalError — ошибка, требующая ручного вмешательства.
-type TerminalError struct {
-	Op      string
-	Context string
-	Err     error
-}
-
-// Error - возвращает TerminalError в виде строки
-func (e *TerminalError) Error() string {
-	if e.Err == nil {
-		return fmt.Sprintf("TERMINAL %s: %s", e.Op, e.Context)
-	}
-	return fmt.Sprintf("TERMINAL %s: %s: %v", e.Op, e.Context, e.Err)
-}
-
-// Unwrap - возвращает ошибку типа Error содержащуюся в TerminalError
-func (e *TerminalError) Unwrap() error {
-	return e.Err
-}
-
-// Сентинельные ошибки
+// Предопределенные ошибки
+// Ошибки общие:
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrAlreadyExists = errors.New("already exists")
-	ErrForbidden     = errors.New("forbidden")
-	ErrUnauthorized  = errors.New("unauthorized")
-	ErrInvalidInput  = errors.New("invalid input")
-	ErrConflict      = errors.New("conflict")
+	ErrNotFound  = errors.New("not found")
+	ErrConflict  = errors.New("conflict")
+	ErrForbidden = errors.New("forbidden")
 )
 
-// SuccessResponse - общий успешный ответ
-type SuccessResponse struct {
-	Message string `json:"message" example:"operation completed successfully"`
-}
+// Ошибки Blobs:
+var (
+	// ErrBlobAlreadyExist - уже зарегистрирован блоб с таким SHA-256
+	ErrBlobAlreadyExist = fmt.Errorf("blob: %w", ErrConflict)
+	// ErrAlreadyOrphan - на блоб уже ничего не ссылается
+	ErrAlreadyOrphan = errors.New("blob already orphan")
+	// ErrBlobInUse - блоб уже используется
+	ErrBlobInUse = errors.New("blob in use")
+	// ErrNoBlobAvailable - нет доступных блобов
+	ErrNoBlobAvailable = errors.New("no blob available")
+)
 
-// ErrorResponse - ошибка
-type ErrorResponse struct {
-	Error   string `json:"error" example:"invalid request"`
-	Code    string `json:"code,omitempty" example:"VALIDATION_ERROR"`
-	Details string `json:"details,omitempty"`
-}
+// Ошибки Storage
+var (
+	// ErrBlobFileMissing - запись в БД есть, а файла на диске нет
+	ErrBlobFileMissing = errors.New("blob file missing")
+	// ErrTampered - зашифрованный блоб повреждён или подменён
+	ErrTampered = errors.New("blob tampered")
+	// ErrDecryptionFailed - AEAD не смог расшифровать (тег не сошёлся)
+	ErrDecryptionFailed = errors.New("decryption failed")
+	// ErrInvalidWrappedKey - обёрнутый ключ структурно некорректен
+	ErrInvalidWrappedKey = errors.New("invalid wrapped key")
+)
+
+// Валидация:
+var (
+	// ErrRangeNotSatisfiable  - Range выходит за пределы blob
+	ErrRangeNotSatisfiable = errors.New("range not satisfiable")
+	// ErrTooLarge - превышен допустимый размер загрузки
+	ErrTooLarge = errors.New("too large")
+	// ErrIncomplete - данные пришли не полностью
+	ErrIncomplete = errors.New("incomplete upload")
+	// ErrInvalidMasterKey - мастер-ключ не соответствует требованиям
+	ErrInvalidMasterKey = errors.New("invalid master key")
+)

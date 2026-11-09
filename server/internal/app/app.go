@@ -1,153 +1,271 @@
-// Пакет app реализовывает создание и настройку всех компонентов сервиса
+// Пакет app реализует создание и настройку компонентов сервиса.
 package app
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	_ "github.com/DarthanHawke/somnium-shade-cast/server/docs"
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/config"
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/repository/sqlite"
-	database "github.com/DarthanHawke/somnium-shade-cast/server/internal/repository/sqlite"
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/transport/http/handlers"
-	httpSwagger "github.com/swaggo/http-swagger"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/analysis/metadata"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/analysis/prober"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/analysis/tags"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/api"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/api/middleware"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/config"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/ingest"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/jobs"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/repository/sqlite"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/storage"
+	"github.com/DarthanHawke/somnium-shade-cast/server/internal/streaming"
 )
 
-// App управляет всеми компонентами сервиса
 type App struct {
 	logger   *slog.Logger
-	database *database.Database
+	database *sqlite.Database
 	http     *http.Server
-	router   *chi.Mux
+	router   http.Handler
 	users    *sqlite.UserRepository
 }
 
-// NewApp создает все компоненты и настраивает зависимости
-func NewApp(cfg *config.Config, log *slog.Logger) (*App, error) {
-	log.Info("initializing server", "port", cfg.Server.Port)
-
-	// Подключаемся к бд
-	db, err := database.Open(cfg.Database.Path)
-	if err != nil {
-		return nil, fmt.Errorf("connect to database: %w", err)
-	}
-	log.Info("database connected")
-
-	// Применяем миграции
-	if err := db.Migrate(context.Background()); err != nil {
-		return nil, fmt.Errorf("migrations: %w", err)
+func NewApp(
+	cfg *config.Config,
+	log *slog.Logger,
+	mKey []byte,
+) (*App, error) {
+	app := &App{
+		logger: log,
 	}
 
-	// Инициализация репозиториев
-	users := sqlite.NewUserRepository(db)
-	userHandler := handlers.NewUserHandler(users)
-
-	// открываем http сервер
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	router := chi.NewRouter()
-	http := &http.Server{
-		Addr:    addr,
-		Handler: router,
+	if err := app.initialize(cfg, mKey); err != nil {
+		app.shutdown()
+		return nil, err
 	}
-	app := App{
-		logger:   log,
-		database: db,
-		http:     http,
-		router:   router,
-		users:    users,
-	}
-	app.routes(userHandler)
 
-	return &app, nil
+	return app, nil
 }
 
-// Run запускает все компоненты сервера
-func (app *App) Run() error {
-	defer app.shutdown()
+func (app *App) initialize(cfg *config.Config, mKey []byte) error {
+	log := app.logger
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	log.Info("initializing server", "port", cfg.Server.Port)
 
-	app.logger.Info("run all servers and connections")
+	db, err := sqlite.Open(cfg.Database.Path)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	app.database = db
 
-	// Запускаем http сервер для prometheus
-	go app.runHTTPServer()
-	app.logger.Info("server started successfully")
+	log.Info("database connected")
 
-	// Ждем сигнал для graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case <-quit:
-		app.logger.Info("received shutdown signal")
-	case <-ctx.Done():
-		app.logger.Info("context cancelled")
+	if err := db.Migrate(context.Background()); err != nil {
+		return fmt.Errorf("migrations: %w", err)
+	}
+	log.Info("database schema is up to date")
+
+	keyManager, err := storage.NewKeyManager("default", mKey)
+	if err != nil {
+		return fmt.Errorf("init key manager: %w", err)
 	}
 
-	app.stopHTTPServer()
-	app.logger.Info("http server stopped")
-	app.logger.Info("server stopped gracefully")
+	log.Info("key manager initialized")
+
+	store, err := storage.NewBlobStore(cfg.Storage.Path, keyManager)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+
+	log.Info("storage opened")
+
+	// Временное хранилище загружаемых файлов
+	spool, err := storage.NewSpool(cfg.Scratch.Size)
+	if err != nil {
+		return fmt.Errorf("open upload spool: %w", err)
+	}
+
+	users := sqlite.NewUserRepository(db)
+	tx := sqlite.NewTxRepository(db)
+	tracks := sqlite.NewTrackRepository(db)
+	albums := sqlite.NewAlbumRepository(db)
+	artists := sqlite.NewArtistRepository(db)
+	search := sqlite.NewSearchRepository(db)
+	blobs := sqlite.NewBlobRepository(db)
+	library := sqlite.NewLibraryRepository(db)
+
+	app.users = users
+
+	proberSvc := prober.NewFprobe(cfg.FfProber.Path)
+	tagsSvc := tags.NewParser()
+
+	metadataSvc := metadata.New(
+		artists,
+		albums,
+		proberSvc,
+		tagsSvc,
+		log,
+	)
+
+	jobsSvc := jobs.NewJobs()
+
+	ingestSvc := ingest.New(ingest.Dependencies{
+		Store:    store,
+		Spool:    spool,
+		Tx:       tx,
+		Blobs:    blobs,
+		Tracks:   tracks,
+		Search:   search,
+		Artists:  artists,
+		Albums:   albums,
+		Jobs:     jobsSvc,
+		Metadata: metadataSvc,
+		Logger:   log,
+	})
+
+	streamingSvc := streaming.New(
+		tracks,
+		library,
+		blobs,
+		store,
+	)
+
+	userHandler := api.NewUserHandler(users, log)
+	ingestHandler := api.NewIngestHandler(ingestSvc, log)
+	streamHandler := api.NewStreamHandler(streamingSvc, log)
+	libraryHandler := api.NewLibraryHandler(library, log)
+
+	handlers := api.NewHandlers(
+		ingestHandler,
+		libraryHandler,
+		streamHandler,
+		userHandler,
+	)
+
+	auth := middleware.DevAuth(users, true, log)
+	limit := middleware.Limit(2, 8)
+
+	app.router = handlers.Routes(auth, limit)
+
+	app.http = &http.Server{
+		Addr: net.JoinHostPort(
+			cfg.Server.Host,
+			strconv.Itoa(cfg.Server.Port),
+		),
+		Handler: app.router,
+	}
+
 	return nil
 }
 
-// закрываем все соединения
+func (app *App) Run() error {
+	defer app.shutdown()
+
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	listener, err := net.Listen("tcp", app.http.Addr)
+	if err != nil {
+		return fmt.Errorf("listen HTTP %q: %w", app.http.Addr, err)
+	}
+	defer listener.Close()
+
+	serveErrors := make(chan error, 1)
+
+	go func() {
+		serveErrors <- app.http.Serve(listener)
+	}()
+
+	app.logger.Info(
+		"HTTP listener opened",
+		"addr", listener.Addr().String(),
+	)
+
+	var serveErr error
+	serveFinished := false
+
+	select {
+	case serveErr = <-serveErrors:
+		serveFinished = true
+
+	case <-ctx.Done():
+		stop()
+		app.logger.Info("received shutdown signal")
+	}
+
+	// Сначала прекращаем обработку HTTP, затем defer
+	shutdownErr := app.stopHTTPServer()
+
+	if !serveFinished {
+		serveErr = <-serveErrors
+	}
+
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		serveErr = nil
+	}
+
+	if serveErr != nil {
+		serveErr = fmt.Errorf("serve HTTP: %w", serveErr)
+	}
+
+	if err := errors.Join(serveErr, shutdownErr); err != nil {
+		return err
+	}
+
+	app.logger.Info("HTTP server stopped")
+
+	return nil
+}
+
+func (app *App) stopHTTPServer() error {
+	if app.http == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	if err := app.http.Shutdown(ctx); err != nil {
+		closeErr := app.http.Close()
+		if closeErr != nil {
+			closeErr = fmt.Errorf("force close HTTP: %w", closeErr)
+		}
+
+		return errors.Join(
+			fmt.Errorf("shutdown HTTP: %w", err),
+			closeErr,
+		)
+	}
+
+	return nil
+}
+
+// shutdown освобождает ресурсы приложения
 func (app *App) shutdown() {
 	app.logger.Info("shutting down resources")
 
 	if app.database != nil {
 		if err := app.database.Close(); err != nil {
-			app.logger.Error("failed to close database", "error", err)
+			app.logger.Error(
+				"failed to close database",
+				"error", err,
+			)
 		}
 	}
 
 	app.logger.Info("resources released")
-}
-
-// runHTTPServer - заускаем http сервер
-func (app *App) runHTTPServer() {
-	app.logger.Info("starting server", "port", app.http.Addr)
-	if err := app.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		app.logger.Error("server failed", "error", err)
-	}
-}
-
-// stopHTTPServer - отсанавливаем http сервер
-func (app *App) stopHTTPServer() {
-	if app.http != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.http.Shutdown(ctx); err != nil {
-			app.logger.Error("failed to shutdown server", "error", err)
-		}
-	}
-}
-
-// routes регестрирует эндпоинты
-func (app *App) routes(userHandler *handlers.UserHandler) {
-	// Health-check для мониторинга
-	app.router.Get("/health", app.handleHealth())
-	app.router.Get("/swagger/*", httpSwagger.WrapHandler)
-	app.router.Mount("/users", userHandler.Routes())
-}
-
-// handleHealth возвращает статус сервиса
-func (app *App) handleHealth() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]any{
-			"status":  "ok",
-			"version": "0.1.0",
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}
 }

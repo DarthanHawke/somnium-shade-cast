@@ -9,3 +9,11 @@
 
 # Logs
 *.log
+
+# VSCode
+.vscode
+
+# Program date(audio cashe, database, certs)
+data
+testdata
+id3v1_test

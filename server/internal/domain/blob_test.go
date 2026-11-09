@@ -6,10 +6,13 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
+// blob создаёт минимальный блоб для расчётов, которым нужны только исходный размер и размер
+// чанка.
 func blob(sizePlain int64, chunkSize int) *domain.Blob {
 	return &domain.Blob{SizePlain: sizePlain, ChunkSize: chunkSize}
 }
 
+// TestNumChunks проверяет число чанков для размеров до границы чанка, на границе и после неё.
 func TestNumChunks(t *testing.T) {
 	tests := []struct {
 		size int64
@@ -29,6 +32,8 @@ func TestNumChunks(t *testing.T) {
 	}
 }
 
+// TestPlanAndRange проверяет план чтения через несколько чанков, диапазон до конца файла и
+// отказ при смещении, равном размеру файла.
 func TestPlanAndRange(t *testing.T) {
 	b := blob(1000, 100) // 10 чанков по 100
 
@@ -53,6 +58,8 @@ func TestPlanAndRange(t *testing.T) {
 	}
 }
 
+// TestChunkOffsetOnDisk проверяет, что смещение зашифрованного чанка учитывает накладные
+// расходы AES-GCM всех предыдущих чанков.
 func TestChunkOffsetOnDisk(t *testing.T) {
 	b := blob(1000, 100)
 	// чанк на диске = 100 + 28 (nonce+tag) = 128
@@ -61,6 +68,8 @@ func TestChunkOffsetOnDisk(t *testing.T) {
 	}
 }
 
+// TestPlainChunkLen_LastChunk проверяет длину последнего чанка для неполного и полностью
+// заполненного чанка.
 func TestPlainChunkLen_LastChunk(t *testing.T) {
 	if got := blob(250, 100).PlainChunkLen(2); got != 50 {
 		t.Errorf("last chunk: got %d, want 50", got)

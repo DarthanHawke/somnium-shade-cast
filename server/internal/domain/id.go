@@ -12,11 +12,6 @@ import (
 // ID — внутренний идентификатор
 type ID int64
 
-// NewID создаёт новый ID из int64
-func NewID(id int64) ID {
-	return ID(id)
-}
-
 func (id *ID) Scan(value any) error {
 	var v sql.NullInt64
 	if err := v.Scan(value); err != nil {
@@ -30,7 +25,7 @@ func (id ID) Value() (driver.Value, error) {
 	return int64(id), nil
 }
 
-// PublicID — внешний идентификатор (ULID)
+// PublicID хранит публичный идентификатор записи в строковом формате ULID.
 type PublicID string
 
 func NewPublicID() PublicID {
