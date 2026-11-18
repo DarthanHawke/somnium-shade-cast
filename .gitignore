@@ -1,0 +1,19 @@
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Environment variables
+.env
+*.env.local
+
+# Logs
+*.log
+
+# VSCode
+.vscode
+
+# Program date(audio cashe, database, certs)
+data
+testdata
+id3v1_test

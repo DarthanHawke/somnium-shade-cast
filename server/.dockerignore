@@ -1,0 +1,12 @@
+.git
+.vscode
+.env
+.env.*
+*.env.local
+data
+**/data
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.exe

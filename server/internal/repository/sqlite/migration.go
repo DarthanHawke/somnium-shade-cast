@@ -1,0 +1,35 @@
+package sqlite
+
+import (
+	"context"
+	"embed"
+	"fmt"
+	"io/fs"
+
+	"github.com/pressly/goose/v3"
+)
+
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// Migrate применяет встроенные миграции и доводит схему БД до актуальной версии.
+func (db *Database) Migrate(ctx context.Context) error {
+	migrateFS, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("migrate: get sub fs: %w", err)
+	}
+
+	provider, err := goose.NewProvider(
+		goose.DialectSQLite3,
+		db.DB.DB,
+		migrateFS,
+	)
+	if err != nil {
+		return fmt.Errorf("migrate: init provider: %w", err)
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("migrate: up: %w", err)
+	}
+	return nil
+}
