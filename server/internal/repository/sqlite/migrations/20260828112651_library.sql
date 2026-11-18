@@ -4,6 +4,7 @@ CREATE TABLE artists (
     id           INTEGER PRIMARY KEY,
     public_id    TEXT NOT NULL UNIQUE,
     name         TEXT NOT NULL,
+    norm_name    TEXT NOT NULL DEFAULT '',
     sort_name    TEXT NOT NULL DEFAULT '',
     mbid         TEXT,
     lastfm_url   TEXT,
@@ -18,7 +19,6 @@ CREATE TABLE artists (
 ) STRICT;
 
 -- Уникальность по нормализованному имени
-ALTER TABLE artists ADD COLUMN norm_name TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX idx_artists_norm ON artists(norm_name);
 
 CREATE TABLE albums (
@@ -44,7 +44,7 @@ CREATE TABLE albums (
 CREATE UNIQUE INDEX idx_albums_artist_title ON albums(artist_id, norm_title);
 
 CREATE TABLE tracks (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
     public_id      TEXT NOT NULL UNIQUE,
     owner_user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     album_id       INTEGER REFERENCES albums(id) ON DELETE SET NULL,
@@ -57,7 +57,7 @@ CREATE TABLE tracks (
     -- статус: uploaded если есть файл; ghost если запись из треклиста альбома без файла
     status         TEXT NOT NULL DEFAULT 'uploaded'
                    CHECK (status IN ('uploaded','ghost')),
-    blob_id        INTEGER REFERENCES blobs(id) ON DELETE SET NULL,
+    blob_id        INTEGER REFERENCES blobs(id)  ON DELETE RESTRICT,
     -- дедупликация:
     fingerprint    TEXT,    -- chromaprint
     fp_duration    INTEGER, -- длительность, с которой считался fp
@@ -69,6 +69,7 @@ CREATE TABLE tracks (
     sample_rate    INTEGER,
     mbid           TEXT,
     lastfm_url     TEXT,
+    channels       INTEGER CHECK (channels > 0),
     enrich_status  TEXT NOT NULL DEFAULT 'pending'
                    CHECK (enrich_status IN ('pending','done','failed','manual')),
     enriched_at    INTEGER,
@@ -77,14 +78,24 @@ CREATE TABLE tracks (
     created_at     INTEGER NOT NULL DEFAULT (unixepoch()*1000),
     updated_at     INTEGER NOT NULL DEFAULT (unixepoch()*1000),
         -- инварианты статуса:
-    CHECK (status != 'uploaded' OR blob_id IS NOT NULL)
+    CHECK (
+        (status = 'uploaded' AND blob_id IS NOT NULL)
+        OR (status = 'ghost' AND blob_id IS NULL)
+    )
 ) STRICT;
 
-CREATE INDEX idx_tracks_owner      ON tracks(owner_user_id, status);
-CREATE INDEX idx_tracks_album      ON tracks(album_id, disc_no, track_no);
-CREATE INDEX idx_tracks_artist     ON tracks(artist_id);
-CREATE INDEX idx_tracks_fp         ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
-CREATE INDEX idx_tracks_blob       ON tracks(blob_id) WHERE blob_id IS NOT NULL;
+CREATE INDEX idx_tracks_owner      
+    ON tracks(owner_user_id, status);
+CREATE INDEX idx_tracks_owner_created
+    ON tracks(owner_user_id, created_at DESC, id DESC);
+CREATE INDEX idx_tracks_album      
+    ON tracks(album_id, disc_no, track_no);
+CREATE INDEX idx_tracks_artist     
+    ON tracks(artist_id);
+CREATE INDEX idx_tracks_fp         
+    ON tracks(fingerprint) WHERE fingerprint IS NOT NULL;
+CREATE INDEX idx_tracks_blob       
+    ON tracks(blob_id) WHERE blob_id IS NOT NULL;
 
 -- Теги с источниками и приоритетами. Один тег может прийти из
 -- нескольких источников - выбираем по приоритету

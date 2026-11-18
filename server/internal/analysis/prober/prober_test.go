@@ -68,7 +68,7 @@ func TestFfprobeMemoryFormats(t *testing.T) {
 				info := binary.BigEndian.Uint64(data[18:26])
 				binary.BigEndian.PutUint64(data[18:26], info & ^samplesMask | 14400)
 			}
-			got, err := prober.NewFprobe(ffprobe).Probe(ctx, bytes.NewReader(data), int64(len(data)))
+			got, err := prober.NewFFprobe(ffprobe).Probe(ctx, bytes.NewReader(data), int64(len(data)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestFfprobeMemoryFormats(t *testing.T) {
 // TestFfprobeCancellationAndInvalidInput проверяет отмену до запуска анализа и
 // классификацию пустого или неподдерживаемого входа как ErrInvalidFile.
 func TestFfprobeCancellationAndInvalidInput(t *testing.T) {
-	p := prober.NewFprobe("")
+	p := prober.NewFFprobe("")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := p.Probe(ctx, bytes.NewReader([]byte("audio")), 5); !errors.Is(err, context.Canceled) {
@@ -137,7 +137,7 @@ func TestFfprobeCancellationDuringRead(t *testing.T) {
 	src := &blockingInput{ctx: ctx, ready: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
-		_, err := prober.NewFprobe(ffprobe).Probe(ctx, src, 128000)
+		_, err := prober.NewFFprobe(ffprobe).Probe(ctx, src, 128000)
 		done <- err
 	}()
 	select {
@@ -153,5 +153,23 @@ func TestFfprobeCancellationDuringRead(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("ffprobe survived cancellation")
+	}
+}
+
+// failingProbeReader имитирует ошибку расшифровки во время HTTP-чтения.
+type failingProbeReader struct{ err error }
+
+func (r failingProbeReader) ReadAt([]byte, int64) (int, error) { return 0, r.err }
+
+// TestProbeDistinguishesSourceError проверяет, что отказ источника остаётся техническим.
+func TestProbeDistinguishesSourceError(t *testing.T) {
+	bin, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	sourceErr := errors.New("cannot read encrypted chunk")
+	_, err = prober.NewFFprobe(bin).Probe(t.Context(), failingProbeReader{sourceErr}, 4096)
+	if !errors.Is(err, sourceErr) || !errors.Is(err, prober.ErrUnavailable) || errors.Is(err, prober.ErrInvalidFile) {
+		t.Fatalf("lost technical source error: %v", err)
 	}
 }

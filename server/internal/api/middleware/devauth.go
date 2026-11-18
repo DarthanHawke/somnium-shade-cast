@@ -10,19 +10,15 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
+// UserRepository загружает пользователя, связанного с запросом.
 type UserRepository interface {
 	GetByPublicID(ctx context.Context, publicID domain.PublicID) (*domain.User, error)
 }
 
-// DevAuth — middleware для dev-режима, который позволяет аутентифицировать пользователя по заголовку X-User.
-func DevAuth(users UserRepository, enabled bool, log *slog.Logger) func(http.Handler) http.Handler {
+// DevAuth подставляет активного пользователя по заголовку X-User в режиме разработки.
+func DevAuth(users UserRepository, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !enabled {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			raw := r.Header.Get("X-User")
 			if raw == "" {
 				respond.JSON(w, http.StatusUnauthorized, respond.ErrorBody{

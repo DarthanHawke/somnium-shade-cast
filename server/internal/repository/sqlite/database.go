@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
@@ -34,6 +35,12 @@ type Database struct {
 // При ошибке инициализации закрывает созданный пул соединений.
 // После использования возвращённую БД следует закрыть вызовом Close.
 func Open(dsn string) (*Database, error) {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	// Драйвер применяет эти настройки при открытии каждого соединения.
+	dsn += separator + "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	conn, err := sqlx.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -56,7 +63,7 @@ func Open(dsn string) (*Database, error) {
 	return db, nil
 }
 
-// initialize проверяет подключение и задаёт параметры соединений SQLite.
+// initialize проверяет подключение и включает WAL для файла БД.
 func (db *Database) initialize() error {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
@@ -66,21 +73,8 @@ func (db *Database) initialize() error {
 		return fmt.Errorf("ping database: %w", err)
 	}
 
-	// Настраиваем ожидание блокировок до остальных PRAGMA.
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		return fmt.Errorf("set busy timeout: %w", err)
-	}
-
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("enable Write-Ahead Logging: %w", err)
-	}
-
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		return fmt.Errorf("enable foreign keys: %w", err)
-	}
-
-	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
-		return fmt.Errorf("set synchronous mode: %w", err)
 	}
 
 	return nil

@@ -17,23 +17,44 @@ import (
 
 const unknownArtist = "Unknown Artist"
 
+// ArtistRepository предоставляет поиск и сохранение исполнителей для Resolve.
+// Если ctx содержит транзакцию, методы выполняются в её рамках.
 type ArtistRepository interface {
+	// GetByNormName возвращает исполнителя по уже нормализованному имени norm.
+	// Если исполнитель отсутствует, возвращает domain.ErrNotFound.
 	GetByNormName(ctx context.Context, norm string) (*domain.Artist, error)
-	GetByID(ctx context.Context, id domain.ID) (*domain.Artist, error)
+
+	// Insert сохраняет исполнителя и при успехе заполняет artist.ID.
+	// При нарушении уникальности возвращает domain.ErrConflict.
 	Insert(ctx context.Context, artist *domain.Artist) error
 }
 
+// AlbumRepository предоставляет поиск и сохранение альбомов для Resolve.
+// Если ctx содержит транзакцию, методы выполняются в её рамках.
 type AlbumRepository interface {
+	// GetByArtistAndNormTitle возвращает альбом исполнителя artistID
+	// по уже нормализованному названию norm.
+	// Если альбом отсутствует, возвращает domain.ErrNotFound.
 	GetByArtistAndNormTitle(ctx context.Context, artistID domain.ID, norm string) (*domain.Album, error)
-	GetByID(ctx context.Context, id domain.ID) (*domain.Album, error)
+
+	// Insert сохраняет альбом и при успехе заполняет album.ID.
+	// При нарушении уникальности возвращает domain.ErrConflict.
 	Insert(ctx context.Context, album *domain.Album) error
 }
 
+// Prober извлекает технические характеристики аудио.
 type Prober interface {
+	// Probe анализирует первый аудиопоток в src размером size байт.
+	// Если аудиопоток отсутствует, возвращает prober.ErrNotAudio.
+	// Если входные данные пусты или их не удалось разобрать,
+	// возвращает prober.ErrInvalidFile.
 	Probe(ctx context.Context, src io.ReaderAt, size int64) (*prober.ProbeResult, error)
 }
 
+// Tagger читает встроенные теги аудиофайла.
 type Tagger interface {
+	// Parse читает теги из src. Если тегов нет, возвращает
+	// пустой результат ParsedTags и nil в позиции ошибки.
 	Parse(ctx context.Context, src io.ReadSeeker) (*tags.ParsedTags, error)
 }
 
@@ -102,13 +123,13 @@ func (s *Service) Extract(
 		Year:        fileTags.Year,
 		DiscNo:      fileTags.DiscNo,
 		CoverData:   fileTags.CoverData,
-		CoverMime:   fileTags.CoverMime,
 
 		// Из probe.
 		Codec:       probe.Codec,
-		MimeType:    probe.MimeType,
+		MIMEType:    probe.MIMEType,
 		DurationMS:  probe.DurationMS,
 		SampleRate:  intPtr(probe.SampleRate),
+		Channels:    intPtr(probe.Channels),
 		BitrateKbps: intPtr(probe.BitrateKbps),
 	}
 
@@ -220,28 +241,6 @@ func (s *Service) resolveAlbum(
 	return album, nil
 }
 
-// GetNamesByID возвращает имя исполнителя и название альбома.
-// Если albumID равен nil, название альбома пустое.
-func (s *Service) GetNamesByID(
-	ctx context.Context,
-	artistID domain.ID,
-	albumID *domain.ID,
-) (string, string, error) {
-	artist, err := s.artists.GetByID(ctx, artistID)
-	if err != nil {
-		return "", "", err
-	}
-	albumTitle := ""
-	if albumID != nil {
-		album, err := s.albums.GetByID(ctx, *albumID)
-		if err != nil {
-			return "", "", err
-		}
-		albumTitle = album.Title
-	}
-	return artist.Name, albumTitle, nil
-}
-
 // titleFromFilename берёт имя файла без расширения и обрезает пробелы по краям.
 // Если название пустое, возвращает "Untitled".
 func titleFromFilename(name string) string {
@@ -253,9 +252,9 @@ func titleFromFilename(name string) string {
 	return title
 }
 
-// intPtr возвращает указатель на v, если v != 0, иначе nil.
+// intPtr возвращает указатель на v, если v положительно, иначе nil.
 func intPtr(v int) *int {
-	if v == 0 {
+	if v <= 0 {
 		return nil
 	}
 	return &v

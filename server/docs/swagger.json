@@ -1,15 +1,545 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "API Somnium Shade Cast",
+        "description": "Тестовая учётная запись администратора для режима prod.",
         "title": "Somnium Shade Cast API",
         "contact": {},
         "version": "1.0"
     },
-    "host": "localhost:8080",
     "basePath": "/",
     "paths": {
+        "/dev/users": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Dev"
+                ],
+                "summary": "Создать тестовый профиль в режиме dev",
+                "parameters": [
+                    {
+                        "description": "Данные пользователя",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.UserRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/dto.UserResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/dev/users/{publicID}/activate": {
+            "post": {
+                "tags": [
+                    "Dev"
+                ],
+                "summary": "Активировать тестовый профиль в режиме dev",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ULID профиля",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.SuccessResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/dev/users/{publicID}/deactivate": {
+            "post": {
+                "tags": [
+                    "Dev"
+                ],
+                "summary": "Деактивировать тестовый профиль в режиме dev",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ULID профиля",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.SuccessResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/ingest/uploads": {
+            "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Uploads"
+                ],
+                "summary": "Получить список загрузок",
+                "parameters": [
+                    {
+                        "maximum": 200,
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Размер страницы",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "minimum": 0,
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Сколько результатов пропустить",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/dto.TrackUploadResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Uploads"
+                ],
+                "summary": "Принять файл для фоновой обработки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Ключ повторной отправки",
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "JSON с метаданными. Часть meta идёт первой.",
+                        "name": "meta",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Аудиофайл",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/dto.TrackUploadResponse"
+                        },
+                        "headers": {
+                            "Location": {
+                                "type": "string",
+                                "description": "Путь для опроса состояния"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        },
+                        "headers": {
+                            "Retry-After": {
+                                "type": "string",
+                                "description": "Ожидание перед повтором в секундах"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/ingest/uploads/{publicID}": {
+            "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Uploads"
+                ],
+                "summary": "Получить состояние загрузки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ULID загрузки",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.TrackUploadResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/lib/albums/{publicID}": {
+            "delete": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "tags": [
+                    "Library"
+                ],
+                "summary": "Удалить треки альбома из своей библиотеки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Публичный ULID",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/lib/artists/{publicID}": {
+            "delete": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "tags": [
+                    "Library"
+                ],
+                "summary": "Удалить треки исполнителя из своей библиотеки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Публичный ULID",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/lib/tracks": {
+            "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Library"
+                ],
+                "summary": "Получить список треков или результаты поиска",
+                "parameters": [
+                    {
+                        "maximum": 200,
+                        "minimum": 1,
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Размер страницы",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "minimum": 0,
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Сколько результатов пропустить",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Поисковая строка до 256 байт",
+                        "name": "q",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/dto.TrackResponse"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
+        "/lib/tracks/{publicID}": {
+            "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Library"
+                ],
+                "summary": "Получить метаданные трека",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ULID трека",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.TrackResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    },
+                    {
+                        "BasicAuth": []
+                    }
+                ],
+                "tags": [
+                    "Library"
+                ],
+                "summary": "Удалить трек из своей библиотеки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Публичный ULID",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            }
+        },
         "/users": {
+            "get": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Получить список пользователей",
+                "responses": {
+                    "200": {
+                        "description": "Список пользователей",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/dto.UserResponse"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Внутренняя ошибка сервера",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            },
             "post": {
                 "security": [
                     {
@@ -96,6 +626,49 @@
                         "schema": {
                             "$ref": "#/definitions/dto.UserResponse"
                         }
+                    },
+                    "400": {
+                        "description": "Неверный ID",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "404": {
+                        "description": "Пользователь не найден",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    },
+                    "500": {
+                        "description": "Внутренняя ошибка сервера",
+                        "schema": {
+                            "$ref": "#/definitions/respond.ErrorBody"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "DevAuth": []
+                    }
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Удалить пользователя",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Публичный ID пользователя",
+                        "name": "publicID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Пользователь удалён"
                     },
                     "400": {
                         "description": "Неверный ID",
@@ -222,11 +795,155 @@
         }
     },
     "definitions": {
+        "domain.UploadStatus": {
+            "type": "string",
+            "enum": [
+                "queued",
+                "processing",
+                "ready",
+                "failed"
+            ],
+            "x-enum-varnames": [
+                "UploadQueued",
+                "UploadProcessing",
+                "UploadReady",
+                "UploadFailed"
+            ]
+        },
+        "dto.AlbumSummary": {
+            "type": "object",
+            "properties": {
+                "public_id": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ArtistSummary": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "public_id": {
+                    "type": "string"
+                }
+            }
+        },
         "dto.SuccessResponse": {
             "type": "object",
             "properties": {
                 "message": {
                     "type": "string"
+                }
+            }
+        },
+        "dto.TrackResponse": {
+            "type": "object",
+            "properties": {
+                "album": {
+                    "description": "Album содержит сведения об альбоме. Если трек не связан с альбомом,\nполе равно nil и передаётся как null.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/dto.AlbumSummary"
+                        }
+                    ]
+                },
+                "artist": {
+                    "$ref": "#/definitions/dto.ArtistSummary"
+                },
+                "bitrate_kbps": {
+                    "type": "integer"
+                },
+                "channels": {
+                    "description": "Число каналов аудио. Null, если неизвестно.",
+                    "type": "integer"
+                },
+                "codec": {
+                    "type": "string"
+                },
+                "cover_url": {
+                    "description": "CoverURL содержит путь к обложке альбома.\nЕсли обложка не задана, поле передаётся как null.",
+                    "type": "string"
+                },
+                "created_at": {
+                    "description": "CreatedAt содержит время создания в миллисекундах с начала эпохи Unix.",
+                    "type": "integer"
+                },
+                "disc_no": {
+                    "type": "integer"
+                },
+                "duration_ms": {
+                    "description": "DurationMS содержит длительность трека в миллисекундах.\nЕсли длительность неизвестна, поле передаётся как null.",
+                    "type": "integer"
+                },
+                "lastfm_url": {
+                    "type": "string"
+                },
+                "public_id": {
+                    "type": "string"
+                },
+                "sample_rate": {
+                    "type": "integer"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "track_no": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "description": "UpdatedAt содержит время последнего обновления в миллисекундах с начала эпохи Unix.",
+                    "type": "integer"
+                }
+            }
+        },
+        "dto.TrackUploadResponse": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "description": "CompletedAt — время завершения в миллисекундах от Unix epoch.",
+                    "type": "integer",
+                    "x-nullable": true
+                },
+                "created_at": {
+                    "description": "CreatedAt — время приёма в миллисекундах от Unix epoch.",
+                    "type": "integer"
+                },
+                "error_code": {
+                    "type": "string",
+                    "enum": [
+                        "duplicate_audio",
+                        "target_unavailable",
+                        "unsupported_audio",
+                        "processing_failed"
+                    ],
+                    "x-nullable": true
+                },
+                "public_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "enum": [
+                        "queued",
+                        "processing",
+                        "ready",
+                        "failed"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.UploadStatus"
+                        }
+                    ]
+                },
+                "track_public_id": {
+                    "type": "string",
+                    "x-nullable": true
                 }
             }
         },
@@ -277,8 +994,11 @@
         }
     },
     "securityDefinitions": {
+        "BasicAuth": {
+            "type": "basic"
+        },
         "DevAuth": {
-            "description": "Публичный ULID активного пользователя для локального режима разработки.",
+            "description": "Публичный ULID активного пользователя для режима dev.",
             "type": "apiKey",
             "name": "X-User",
             "in": "header"

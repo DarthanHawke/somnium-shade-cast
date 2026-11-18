@@ -16,6 +16,7 @@ type TrackView struct {
 	Codec       string                `db:"codec"`
 	BitrateKbps *int                  `db:"bitrate_kbps"`
 	SampleRate  *int                  `db:"sample_rate"`
+	Channels    *int                  `db:"channels"`
 	LastfmURL   string                `db:"lastfm_url"`
 	CreatedAt   domain.UnixTimeMillis `db:"created_at"`
 	UpdatedAt   domain.UnixTimeMillis `db:"updated_at"`

@@ -79,12 +79,6 @@ func (b *SpoolBuffer) Reader() *bytes.Reader {
 	return bytes.NewReader(b.data)
 }
 
-// ReadAt читает данные с байтового смещения off, не изменяя позиции курсоров Reader.
-// Допускает одновременные вызовы из нескольких горутин.
-func (b *SpoolBuffer) ReadAt(p []byte, off int64) (int, error) {
-	return bytes.NewReader(b.data).ReadAt(p, off)
-}
-
 // contextReader проверяет отмену перед очередным чтением src.
 type contextReader struct {
 	ctx context.Context

@@ -26,10 +26,6 @@ type UploadInput struct {
 	OriginalFilename string
 }
 
-// UploadResult содержит трек и связанные сущности после успешной загрузки.
-// Track и Artist всегда заданы; Album равен nil, если альбом отсутствует.
-type UploadResult struct {
-	Track  *domain.Track
-	Artist *domain.Artist
-	Album  *domain.Album
+type uploadPayload struct {
+	UploadID domain.PublicID `json:"upload_id"`
 }

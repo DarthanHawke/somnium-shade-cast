@@ -25,7 +25,7 @@ const selectTrack = `
 	SELECT id, public_id, owner_user_id, album_id, artist_id,
 		title, norm_title, track_no, disc_no, duration_ms,
 		status, blob_id, fingerprint, fp_duration, is_intentional_dup,
-		original_filename, codec, bitrate_kbps, sample_rate,
+		original_filename, codec, bitrate_kbps, sample_rate, channels,
 		mbid, lastfm_url, enrich_status, enriched_at, manual_override,
 		created_at, updated_at
 	FROM tracks AS t
@@ -47,13 +47,13 @@ func (r *TrackRepository) Insert(ctx context.Context, track *domain.Track) error
 		INSERT INTO tracks (public_id, owner_user_id, album_id, artist_id,
 			title, norm_title, track_no, disc_no, duration_ms,
 			status, blob_id, fingerprint, fp_duration, is_intentional_dup,
-			original_filename, codec, bitrate_kbps, sample_rate,
+			original_filename, codec, bitrate_kbps, sample_rate, channels,
 			mbid, lastfm_url, enrich_status, manual_override,
 			created_at, updated_at)
 		VALUES (:public_id, :owner_user_id, :album_id, :artist_id,
 			:title, :norm_title, :track_no, :disc_no, :duration_ms,
 			:status, :blob_id, :fingerprint, :fp_duration, :is_intentional_dup,
-			:original_filename, :codec, :bitrate_kbps, :sample_rate,
+			:original_filename, :codec, :bitrate_kbps, :sample_rate, :channels,
 			:mbid, :lastfm_url, :enrich_status, :manual_override,
 			:created_at, :updated_at)`
 
@@ -129,7 +129,7 @@ func (r *TrackRepository) GetBySHA256(ctx context.Context, sha string) (*domain.
 		SELECT id, public_id, owner_user_id, album_id, artist_id,
 			title, norm_title, track_no, disc_no, duration_ms,
 			status, blob_id, fingerprint, fp_duration, is_intentional_dup,
-			original_filename, codec, bitrate_kbps, sample_rate,
+			original_filename, codec, bitrate_kbps, sample_rate, channels,
 			mbid, lastfm_url, enrich_status, enriched_at, manual_override,
 			created_at, updated_at 
 		FROM tracks 
@@ -163,7 +163,7 @@ func (r *TrackRepository) GetByOwnerAndSHA256(
 		SELECT id, public_id, owner_user_id, album_id, artist_id,
 			title, norm_title, track_no, disc_no, duration_ms,
 			status, blob_id, fingerprint, fp_duration, is_intentional_dup,
-			original_filename, codec, bitrate_kbps, sample_rate,
+			original_filename, codec, bitrate_kbps, sample_rate, channels,
 			mbid, lastfm_url, enrich_status, enriched_at, manual_override,
 			created_at, updated_at 
 		FROM tracks 
@@ -196,7 +196,7 @@ func (r *TrackRepository) Update(ctx context.Context, track *domain.Track) error
 			norm_title = :norm_title, track_no = :track_no, disc_no = :disc_no, 
 			duration_ms = :duration_ms, fingerprint = :fingerprint, fp_duration = :fp_duration, 
 			is_intentional_dup = :is_intentional_dup, original_filename = :original_filename, 
-			codec = :codec, bitrate_kbps = :bitrate_kbps, sample_rate = :sample_rate, mbid = :mbid, 
+			codec = :codec, bitrate_kbps = :bitrate_kbps, sample_rate = :sample_rate, channels = :channels, mbid = :mbid, 
 			lastfm_url = :lastfm_url, enrich_status = :enrich_status, 
 			manual_override = :manual_override, updated_at = :updated_at
 		WHERE public_id = :public_id`
@@ -256,7 +256,7 @@ func (r *TrackRepository) Materialize(ctx context.Context, track *domain.Track) 
 		SET original_filename = :original_filename, fingerprint = :fingerprint, 
 			fp_duration = :fp_duration, status = :status, blob_id = :blob_id, 
 			duration_ms = :duration_ms, codec = :codec, is_intentional_dup = :is_intentional_dup,
-			bitrate_kbps = :bitrate_kbps, sample_rate = :sample_rate, updated_at = :updated_at
+			bitrate_kbps = :bitrate_kbps, sample_rate = :sample_rate, channels = :channels, updated_at = :updated_at
 		WHERE public_id = :public_id
 			AND owner_user_id = :owner_user_id
 			AND status = 'ghost'
@@ -292,7 +292,7 @@ func (r *TrackRepository) ListByOwner(
 		SELECT id, public_id, owner_user_id, album_id, artist_id,
 			title, norm_title, track_no, disc_no, duration_ms,
 			status, blob_id, fingerprint, fp_duration, is_intentional_dup,
-			original_filename, codec, bitrate_kbps, sample_rate,
+			original_filename, codec, bitrate_kbps, sample_rate, channels,
 			mbid, lastfm_url, enrich_status, enriched_at, manual_override,
 			created_at, updated_at
 		FROM tracks

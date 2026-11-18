@@ -341,12 +341,9 @@ func TestCorruptionAfterFirstChunkAbortsHTTPBody(t *testing.T) {
 	h := newRig(t)
 	owner := h.user("owner")
 	data := bytes.Repeat([]byte{42}, 2*domain.DefaultChunkSize+123)
-	result, err := h.fixedService(nil, nil).Upload(context.Background(),
-		ingest.UploadInput{OwnerID: owner.ID}, bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	blob, err := h.blobs.GetByID(context.Background(), *result.Track.BlobID)
+	track := h.uploadTrack(t.Context(), h.fixedService(nil, nil),
+		ingest.UploadInput{OwnerID: owner.ID}, data)
+	blob, err := h.blobs.GetByID(context.Background(), *track.BlobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +363,7 @@ func TestCorruptionAfterFirstChunkAbortsHTTPBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := h.request("GET", "/stream/"+string(result.Track.PublicID), owner.PublicID, nil, nil)
+	response := h.request("GET", "/stream/"+string(track.PublicID), owner.PublicID, nil, nil)
 	defer response.Body.Close()
 	got, err := io.ReadAll(response.Body)
 	if response.StatusCode != 200 || err == nil ||

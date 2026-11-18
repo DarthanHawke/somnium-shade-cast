@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"testing"
 	"time"
-
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/api/dto"
 )
 
 // ordinaryM4A содержит синтетическую синусоиду в M4A с атомом moov после mdat,
@@ -68,8 +66,7 @@ func TestOrdinaryM4AWithMoovAtEndAndHTTPDecode(t *testing.T) {
 	padded = append(padded, data[at:]...)
 	h := newRig(t)
 	owner := h.user("owner")
-	uploaded := decode[dto.TrackResponse](t, responseBody(
-		t, h.multipart(owner.PublicID, `{}`, padded, "ordinary.m4a"), 201))
+	uploaded := h.readyTrackHTTP(owner.PublicID, `{}`, padded, "ordinary.m4a")
 	path := "/stream/" + uploaded.PublicID
 	result := h.request("GET", path, owner.PublicID, nil, nil)
 	if result.Header.Get("Content-Type") != "audio/mp4" || !bytes.Equal(responseBody(t, result, 200), padded) {

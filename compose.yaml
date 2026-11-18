@@ -1,0 +1,16 @@
+services:
+  server:
+    build:
+      context: ./server
+    env_file:
+      - ./server/.env
+    environment:
+      SSC_SERVER_HOST: 0.0.0.0
+      SSC_SERVER_PORT: "${SSC_SERVER_PORT:-8080}"
+    ports:
+      - "127.0.0.1:${SSC_PUBLISH_PORT:-8080}:${SSC_SERVER_PORT:-8080}"
+    volumes:
+      - server-data:/data
+
+volumes:
+  server-data:

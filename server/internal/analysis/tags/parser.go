@@ -30,7 +30,6 @@ type ParsedTags struct {
 	TrackNo     int
 	DiscNo      int
 	CoverData   []byte // сырые байты обложки (jpg/png)
-	CoverMime   string
 }
 
 // Parse читает теги из src. Если теги отсутствуют, возвращает пустой результат.
@@ -46,8 +45,8 @@ func (p *Parser) Parse(ctx context.Context, src io.ReadSeeker) (*ParsedTags, err
 	return parsed, err
 }
 
-// ParseFromReader — вариант для случаев, когда файл уже открыт
-// (например, при стриминге из multipart без сохранения в tmp)
+// ParseFromReader читает теги. r должен быть установлен на начало аудиофайла.
+// При отсутствии тегов возвращает пустой результат. Положение r после вызова не определено.
 func ParseFromReader(r io.ReadSeeker) (*ParsedTags, error) {
 	m, err := tag.ReadFrom(r)
 	if errors.Is(err, tag.ErrNoTagsFound) {
@@ -73,7 +72,6 @@ func ParseFromReader(r io.ReadSeeker) (*ParsedTags, error) {
 	parsed.DiscNo = discNo
 	if pic := m.Picture(); pic != nil {
 		parsed.CoverData = pic.Data
-		parsed.CoverMime = pic.MIMEType
 	}
 	return parsed, nil
 }

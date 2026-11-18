@@ -100,13 +100,13 @@ func (h *rig) open() {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.meta = metadata.New(h.artists, h.albums, prober.NewFprobe(""), tags.NewParser(), h.log)
+	h.meta = metadata.New(h.artists, h.albums, prober.NewFFprobe(""), tags.NewParser(), h.log)
 	h.upload = h.service(nil, nil, nil)
 	h.http = httptest.NewServer(api.NewHandlers(
 		api.NewIngestHandler(h.upload, h.log), api.NewLibraryHandler(sqlite.NewLibraryRepository(h.db), h.log),
 		api.NewStreamHandler(streaming.New(h.tracks, h.library, h.blobs, h.store), h.log),
 		api.NewUserHandler(h.users, h.log),
-	).Routes(middleware.DevAuth(h.users, true, h.log), middleware.Limit(2, 8)))
+	).Routes(middleware.DevAuth(h.users, h.log), middleware.Limit(2, 8), true))
 	h.http.Client().Timeout = 15 * time.Second
 }
 
@@ -136,13 +136,12 @@ func (h *rig) service(
 		Spool:    spool,
 		Tx:       sqlite.NewTxRepository(h.db),
 		Blobs:    blobs,
+		Album:    h.albums,
 		Tracks:   h.tracks,
 		Search:   search,
-		Artists:  h.artists,
-		Albums:   h.albums,
-		Jobs:     jobs.NewJobs(),
 		Metadata: meta,
-		Logger:   h.log,
+		Uploads:  sqlite.NewUploadRepository(h.db),
+		Queue:    jobs.New(sqlite.NewJobRepository(h.db)),
 	})
 }
 
@@ -215,6 +214,12 @@ func (h *rig) user(name string) *domain.User {
 // его в ingest.
 func (h *rig) multipart(owner domain.PublicID, meta string, data []byte, name string) *http.Response {
 	h.t.Helper()
+	return h.multipartWithKey(owner, string(domain.NewPublicID()), meta, data, name)
+}
+
+// multipartWithKey позволяет повторить отправку с тем же ключом.
+func (h *rig) multipartWithKey(owner domain.PublicID, key, meta string, data []byte, name string) *http.Response {
+	h.t.Helper()
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	part, err := w.CreateFormField("meta")
@@ -234,8 +239,11 @@ func (h *rig) multipart(owner domain.PublicID, meta string, data []byte, name st
 	if err := w.Close(); err != nil {
 		h.t.Fatal(err)
 	}
-	return h.request("POST", "/ingest/tracks", owner, &body,
-		map[string]string{"Content-Type": w.FormDataContentType()})
+	headers := map[string]string{"Content-Type": w.FormDataContentType()}
+	if key != "" {
+		headers["Idempotency-Key"] = key
+	}
+	return h.request(http.MethodPost, uploadsPath, owner, &body, headers)
 }
 
 // count возвращает число записей в таблице тестовой БД по имени из самого теста.
@@ -292,11 +300,10 @@ func TestHTTPRealUploadLibraryPlaybackAndRestart(t *testing.T) {
 		t.Fatalf("empty library=%s", got)
 	}
 	responseBody(t, h.request("GET", "/lib/tracks", "", nil, nil), 401)
-	uploaded := decode[dto.TrackResponse](
-		t,
-		responseBody(t, h.multipart(owner.PublicID, `{"fingerprint":"client-fp","fp_duration":10}`, data, "song.mp3"), 201))
+	uploaded := h.readyTrackHTTP(owner.PublicID, `{"fingerprint":"client-fp","fp_duration":10}`, data, "song.mp3")
 	if uploaded.Title != "Memory Song" || uploaded.Artist.Name != "AC/DC" || uploaded.Album == nil ||
-		uploaded.Album.Title != "Test Album" || uploaded.DurationMS == nil || *uploaded.DurationMS < 9000 {
+		uploaded.Album.Title != "Test Album" || uploaded.DurationMS == nil || *uploaded.DurationMS < 9000 ||
+		uploaded.Channels == nil || *uploaded.Channels != 1 {
 		t.Fatalf("incorrect upload response: %+v", uploaded)
 	}
 	pid := domain.PublicID(uploaded.PublicID)
@@ -312,14 +319,11 @@ func TestHTTPRealUploadLibraryPlaybackAndRestart(t *testing.T) {
 		sqlDuration != *uploaded.DurationMS {
 		t.Fatalf("SQL duration units: %d, err=%v", sqlDuration, err)
 	}
-	get := decode[dto.TrackResponse](
-		t,
-		responseBody(t, h.request("GET", "/lib/tracks/"+uploaded.PublicID, owner.PublicID, nil, nil), 200))
 	listed := decode[[]dto.TrackResponse](
 		t,
 		responseBody(t, h.request("GET", "/lib/tracks?limit=1", owner.PublicID, nil, nil), 200))
-	if !reflect.DeepEqual(get, uploaded) || len(listed) != 1 || !reflect.DeepEqual(listed[0], uploaded) {
-		t.Fatal("upload/get/list DTO mismatch")
+	if len(listed) != 1 || !reflect.DeepEqual(listed[0], uploaded) {
+		t.Fatal("track detail and library list DTO mismatch")
 	}
 	path := "/stream/" + uploaded.PublicID
 	result := h.request("GET", path, owner.PublicID, nil, nil)
@@ -365,10 +369,8 @@ func TestHTTPRealUploadLibraryPlaybackAndRestart(t *testing.T) {
 		!bytes.Equal(responseBody(t, result, 200), data) {
 		t.Fatal("download differs")
 	}
-	responseBody(t, h.multipart(owner.PublicID, `{}`, data, "song.mp3"), 409)
-	duplicate := decode[dto.TrackResponse](
-		t,
-		responseBody(t, h.multipart(owner.PublicID, `{"force_dup":true}`, data, "song.mp3"), 201))
+	requireUploadFailure(t, h.finishUploadHTTP(owner.PublicID, `{}`, data, "song.mp3"), "duplicate_audio")
+	duplicate := h.readyTrackHTTP(owner.PublicID, `{"force_dup":true}`, data, "song.mp3")
 	dupTrack, err := h.tracks.GetByPublicID(context.Background(), domain.PublicID(duplicate.PublicID))
 	if err != nil {
 		t.Fatal(err)
@@ -399,24 +401,35 @@ func TestHTTPRealUploadLibraryPlaybackAndRestart(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("audio decode failed: %v: %s", err, out)
 	}
-	if err := h.upload.Delete(context.Background(), pid); err != nil {
-		t.Fatal(err)
-	}
+	responseBody(t, h.request(
+		http.MethodDelete,
+		"/lib/tracks/"+string(pid),
+		owner.PublicID,
+		nil,
+		nil,
+	), http.StatusNoContent)
 	if h.count("blobs") != 1 {
 		t.Fatal("deleting one reference removed shared blob")
 	}
 	responseBody(t, h.request("GET", "/stream/"+duplicate.PublicID, owner.PublicID, nil, nil), 200)
-	if err := h.upload.Delete(context.Background(), domain.PublicID(duplicate.PublicID)); err != nil {
-		t.Fatal(err)
+	responseBody(t, h.request(
+		http.MethodDelete,
+		"/lib/tracks/"+duplicate.PublicID,
+		owner.PublicID,
+		nil,
+		nil,
+	), http.StatusNoContent)
+
+	if h.count("blobs") != 1 || h.count("tracks") != 0 {
+		t.Fatal("expected an unreferenced blob and no tracks")
 	}
-	if h.count("blobs") != 0 || h.count("tracks") != 0 {
-		t.Fatal("last reference not removed")
+	var refCount int
+	if err := h.db.Get(&refCount, "SELECT ref_count FROM blobs"); err != nil || refCount != 0 {
+		t.Fatalf("ref_count=%d, want 0: %v", refCount, err)
 	}
+
 	responseBody(t, h.request("GET", path, owner.PublicID, nil, nil), 404)
-	ids, err := h.search.Search(context.Background(), "Memory", 10)
-	if err != nil || len(ids) != 0 {
-		t.Fatalf("FTS kept deleted tracks: %v %v", ids, err)
-	}
+	responseBody(t, h.request("GET", path, owner.PublicID, nil, nil), 404)
 }
 
 // fixedMetadata подменяет извлечение тегов предсказуемыми данными и использует обычный
@@ -433,7 +446,7 @@ func (m fixedMetadata) Extract(context.Context, io.ReaderAt, int64, string) (*do
 		DiscNo:     1,
 		DurationMS: &durationMS,
 		Codec:      "mp3",
-		MimeType:   "audio/mpeg",
+		MIMEType:   "audio/mpeg",
 	}, nil
 }
 
@@ -441,21 +454,6 @@ func (m fixedMetadata) Extract(context.Context, io.ReaderAt, int64, string) (*do
 // репозиториев блобов и поиска.
 func (h *rig) fixedService(blobs ingest.BlobRepository, search ingest.SearchRepository) *ingest.Service {
 	return h.service(fixedMetadata{h.meta}, blobs, search)
-}
-
-// tryUpload вызывает загрузку из буфера и превращает панику сервиса в ошибку, которую может
-// проверить тест.
-func tryUpload(svc *ingest.Service,
-	req ingest.UploadInput,
-	data []byte,
-) (result *ingest.UploadResult, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			result = nil
-			err = fmt.Errorf("upload panicked: %v", p)
-		}
-	}()
-	return svc.Upload(context.Background(), req, bytes.NewReader(data))
 }
 
 // barrierBlobs синхронизирует первые два поиска по SHA-256, чтобы обе загрузки увидели
@@ -508,32 +506,51 @@ func TestConcurrentUploadsShareBlobWithoutCorruption(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			type outcome struct {
-				result *ingest.UploadResult
-				err    error
+				item *domain.TrackUpload
+				err  error
 			}
 			done := make(chan outcome, 2)
 			for _, owner := range []*domain.User{a, b} {
 				go func(owner *domain.User) {
-					value, err := svc.Upload(ctx, ingest.UploadInput{
+					item, err := svc.Accept(ctx, ingest.UploadInput{
 						OwnerID:          owner.ID,
 						ForceDup:         tc.force,
-						OriginalFilename: "same.mp3"},
-						bytes.NewReader(data),
-					)
-					done <- outcome{value, err}
+						OriginalFilename: "same.mp3",
+					}, string(domain.NewPublicID()), bytes.NewReader(data))
+					done <- outcome{item, err}
 				}(owner)
 			}
-			successes := 0
+			accepted := make([]*domain.TrackUpload, 0, 2)
 			for range 2 {
 				out := <-done
 				if out.err != nil {
-					if tc.successes != 1 || !errors.Is(out.err, domain.ErrConflict) {
-						t.Fatal(out.err)
-					}
+					t.Fatal(out.err)
+				}
+				if out.item == nil || out.item.JobID == nil {
+					t.Fatal("accepted upload has no job")
+				}
+				accepted = append(accepted, out.item)
+			}
+
+			stop := h.startUploadWorker(svc.Process)
+			defer stop()
+			successes := 0
+			for _, item := range accepted {
+				final := h.waitUploadItem(ctx, item)
+				h.waitJobStatus(ctx, *item.JobID, "done")
+				if final.Status != domain.UploadReady {
+					requireUploadFailure(t, final, "duplicate_audio")
 					continue
 				}
 				successes++
-				blob, err := h.blobs.GetByID(ctx, *out.result.Track.BlobID)
+				if final.TrackPublicID == nil {
+					t.Fatalf("completed upload has no track: %+v", final)
+				}
+				track, err := h.tracks.GetByPublicID(ctx, *final.TrackPublicID)
+				if err != nil || track.BlobID == nil {
+					t.Fatalf("track = %+v, err=%v", track, err)
+				}
+				blob, err := h.blobs.GetByID(ctx, *track.BlobID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -547,6 +564,7 @@ func TestConcurrentUploadsShareBlobWithoutCorruption(t *testing.T) {
 					t.Fatalf("concurrent write corrupted blob: %v", err)
 				}
 			}
+			stop()
 			if successes != tc.successes || h.count("blobs") != 1 || h.count("tracks") != successes {
 				t.Fatalf("unexpected persisted counts, successes=%d", successes)
 			}
@@ -583,43 +601,51 @@ type failingSearch struct {
 	failure error
 }
 
-// Insert возвращает заданную ошибку вместо записи в поисковый индекс.
-func (f failingSearch) Insert(context.Context, domain.ID, string, string, string) error {
+// IndexTrack записывает индекс и имитирует сбой до завершения транзакции.
+func (f failingSearch) IndexTrack(ctx context.Context, id domain.ID) error {
+	if err := f.SearchRepository.IndexTrack(ctx, id); err != nil {
+		return err
+	}
 	return f.failure
 }
 
-// TestUploadRollbackRemovesOwnedFile проверяет, что сбой записи в поисковый индекс
-// откатывает созданные записи и удаляет файл этой загрузки.
-func TestUploadRollbackRemovesOwnedFile(t *testing.T) {
+// TestUploadRollbackPreservesFileForRetry проверяет откат трека и FTS при
+// временной ошибке, удержание принятого файла и повтор той же загрузки.
+func TestUploadRollbackPreservesFileForRetry(t *testing.T) {
 	h := newRig(t)
 	owner := h.user("owner")
-	sentinel := errors.New("FTS unavailable")
+	ctx := t.Context()
+	sentinel := fmt.Errorf("FTS unavailable: %w", domain.ErrNotFound)
 	svc := h.fixedService(nil, failingSearch{h.search, sentinel})
-	if _, err := svc.Upload(
-		context.Background(),
-		ingest.UploadInput{OwnerID: owner.ID},
-		bytes.NewReader([]byte("audio")),
-	); !errors.Is(err, sentinel) {
-		t.Fatalf("upload error = %v, want original search error", err)
+	item, err := svc.Accept(ctx, ingest.UploadInput{OwnerID: owner.ID}, "retry-fts", strings.NewReader("audio"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if h.count("tracks") != 0 || h.count("blobs") != 0 {
-		t.Fatal("rollback left rows")
+	h.waitFailedAttempt(ctx, svc, item, sentinel)
+
+	if h.count("tracks") != 0 || h.count("blobs") != 1 || h.count("tracks_fts") != 0 {
+		t.Fatal("failed attempt saved a track or lost its staged file")
 	}
 	if h.count("artists") != 0 || h.count("albums") != 0 {
 		t.Fatal("rollback left file-tag artist or album")
 	}
-	files := 0
-	if err := filepath.WalkDir(filepath.Join(h.root, "blobs"),
-		func(_ string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() {
-				files++
-			}
-			return nil
-		}); err != nil || files != 0 {
-		t.Fatalf("rollback left files: %d, %v", files, err)
+	stored, err := h.upload.Get(ctx, owner.ID, item.PublicID)
+	if err != nil || stored.Status != domain.UploadQueued || stored.BlobID == nil {
+		t.Fatalf("upload unavailable for retry: %+v, %v", stored, err)
+	}
+	blob, err := h.blobs.GetByID(ctx, *stored.BlobID)
+	if err != nil || blob.RefCount != 0 {
+		t.Fatalf("reference count survived rollback: %+v, %v", blob, err)
+	}
+	if _, err := h.db.ExecContext(ctx, "UPDATE jobs SET run_after = 0 WHERE id = ?", *item.JobID); err != nil {
+		t.Fatal(err)
+	}
+	stop := h.startUploadWorker(h.fixedService(nil, nil).Process)
+	defer stop()
+	final := h.waitUploadItem(ctx, item)
+	if final.Status != domain.UploadReady || final.TrackPublicID == nil ||
+		h.count("tracks") != 1 || h.count("blobs") != 1 || h.count("tracks_fts") != 1 {
+		t.Fatalf("retry did not finish original upload: %+v", final)
 	}
 }
 
@@ -636,7 +662,6 @@ func (h *rig) ghost(owner *domain.User, withAlbum bool) *domain.Track {
 		h.t.Fatal(err)
 	}
 	var albumID *domain.ID
-	albumTitle := ""
 	if withAlbum {
 		album, err := domain.NewAlbum(artist.ID, "Ghost Album", nil, nil)
 		if err != nil {
@@ -646,7 +671,6 @@ func (h *rig) ghost(owner *domain.User, withAlbum bool) *domain.Track {
 			h.t.Fatal(err)
 		}
 		albumID = &album.ID
-		albumTitle = album.Title
 	}
 	ghost, err := domain.NewTrack(domain.NewTrackParams{
 		OwnerID:          owner.ID,
@@ -672,9 +696,6 @@ func (h *rig) ghost(owner *domain.User, withAlbum bool) *domain.Track {
 	if err := h.tracks.Insert(ctx, ghost); err != nil {
 		h.t.Fatal(err)
 	}
-	if err := h.search.Insert(ctx, ghost.ID, ghost.Title, artist.Name, albumTitle); err != nil {
-		h.t.Fatal(err)
-	}
 	return ghost
 }
 
@@ -691,16 +712,13 @@ func TestGhostMaterializationPreservesIdentity(t *testing.T) {
 			artistsBefore, albumsBefore := h.count("artists"), h.count("albums")
 			svc := h.fixedService(nil, nil)
 			data := []byte("ghost audio")
-			result, err := tryUpload(svc, ingest.UploadInput{
+			track := h.uploadTrack(t.Context(), svc, ingest.UploadInput{
 				OwnerID:     owner.ID,
 				GhostID:     &ghost.PublicID,
 				ForceDup:    true,
 				Fingerprint: "ghost-fp",
 				FPDuration:  12,
 			}, data)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if got := h.count("artists"); got != artistsBefore {
 				t.Errorf("ghost upload created unused artist: got %d, want %d",
 					got, artistsBefore)
@@ -709,17 +727,17 @@ func TestGhostMaterializationPreservesIdentity(t *testing.T) {
 				t.Errorf("ghost upload created unused album: got %d, want %d",
 					got, albumsBefore)
 			}
-			if result.Track.PublicID != ghost.PublicID ||
-				result.Track.Title != ghost.Title ||
-				result.Track.ArtistID != ghost.ArtistID ||
-				result.Artist.Name != "Ghost Artist" ||
-				result.Track.DiscNo != 2 {
+			path := "/lib/tracks/" + string(ghost.PublicID)
+			view := decode[dto.TrackResponse](t, responseBody(t,
+				h.request(http.MethodGet, path, owner.PublicID, nil, nil), http.StatusOK))
+			if track.PublicID != ghost.PublicID || track.Title != ghost.Title ||
+				track.ArtistID != ghost.ArtistID || view.Artist.Name != "Ghost Artist" || track.DiscNo != 2 {
 				t.Fatal("file tags replaced ghost identity")
 			}
-			if withAlbum && (result.Album == nil || result.Album.Title != "Ghost Album") {
+			if withAlbum && (view.Album == nil || view.Album.Title != "Ghost Album") {
 				t.Fatal("ghost album lost")
 			}
-			if !withAlbum && result.Album != nil {
+			if !withAlbum && view.Album != nil {
 				t.Fatal("file album attached to albumless ghost")
 			}
 			stored, err := h.tracks.GetByPublicID(context.Background(), ghost.PublicID)
@@ -736,20 +754,11 @@ func TestGhostMaterializationPreservesIdentity(t *testing.T) {
 			if h.count("tracks") != 1 {
 				t.Fatal("materialization created another track")
 			}
-			if _, err := svc.Upload(context.Background(), ingest.UploadInput{
-				OwnerID:  owner.ID,
-				GhostID:  &ghost.PublicID,
-				ForceDup: true,
-			}, bytes.NewReader(data)); !errors.Is(err, domain.ErrConflict) {
-				t.Fatalf("uploaded track overwritten: %v", err)
-			}
-			if err := svc.Delete(context.Background(), ghost.PublicID); err != nil {
-				t.Fatal(err)
-			}
-			ids, err := h.search.Search(context.Background(), "Ghost", 10)
-			if err != nil || len(ids) != 0 {
-				t.Fatalf("materialization/delete corrupted FTS: %v %v", ids, err)
-			}
+			rejected := h.processUpload(t.Context(), svc, ingest.UploadInput{
+				OwnerID: owner.ID, GhostID: &ghost.PublicID, ForceDup: true,
+			}, data)
+			requireUploadFailure(t, rejected, "target_unavailable")
+			responseBody(t, h.request(http.MethodDelete, path, owner.PublicID, nil, nil), http.StatusNoContent)
 		})
 	}
 }
@@ -761,21 +770,23 @@ func TestGhostRejectsDifferentOwnerAndMalformedID(t *testing.T) {
 	a, b := h.user("a"), h.user("b")
 	ghost := h.ghost(a, true)
 	svc := h.fixedService(nil, nil)
-	if _, err := svc.Upload(context.Background(), ingest.UploadInput{
-		OwnerID: b.ID,
-		GhostID: &ghost.PublicID,
-	}, bytes.NewReader([]byte("audio"))); !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("wrong owner accepted: %v", err)
-	}
+	rejected := h.processUpload(t.Context(), svc, ingest.UploadInput{
+		OwnerID: b.ID, GhostID: &ghost.PublicID,
+	}, []byte("audio"))
+	requireUploadFailure(t, rejected, "target_unavailable")
 	bad := domain.PublicID("invalid")
-	if _, err := svc.Upload(context.Background(), ingest.UploadInput{
-		OwnerID: a.ID,
-		GhostID: &bad,
-	}, bytes.NewReader([]byte("audio"))); err == nil {
-		t.Fatal("malformed ghost ID accepted")
+	_, err := svc.Accept(t.Context(), ingest.UploadInput{OwnerID: a.ID, GhostID: &bad},
+		"bad-ghost", strings.NewReader("audio"))
+	validation, ok := errors.AsType[*domain.ValidationError](err)
+	if !ok || validation.Field != "ghost_id" {
+		t.Fatalf("malformed ghost ID validation: %v", err)
 	}
-	if h.count("blobs") != 0 || h.count("tracks") != 1 {
-		t.Fatal("failed materialization left rows")
+	if h.count("track_uploads") != 1 || h.count("tracks") != 1 {
+		t.Fatal("failed materialization changed track or queued malformed input")
+	}
+	blob, err := h.upload.Get(t.Context(), b.ID, rejected.PublicID)
+	if err != nil || blob.BlobID != nil {
+		t.Fatalf("failed materialization kept audio pinned: %+v, %v", blob, err)
 	}
 }
 
@@ -785,9 +796,7 @@ func TestUploadWithoutAlbumAndInvalidRequests(t *testing.T) {
 	data := audio(t, "mp3", "libmp3lame", "-metadata", "title=Standalone", "-metadata", "artist=Artist")
 	h := newRig(t)
 	owner := h.user("owner")
-	track := decode[dto.TrackResponse](
-		t,
-		responseBody(t, h.multipart(owner.PublicID, `{}`, data, "single.mp3"), 201))
+	track := h.readyTrackHTTP(owner.PublicID, `{}`, data, "single.mp3")
 	if track.Album != nil || track.CoverURL != nil {
 		t.Fatal("absent album/cover must be null")
 	}
@@ -802,14 +811,16 @@ func TestUploadWithoutAlbumAndInvalidRequests(t *testing.T) {
 		})
 	}
 	responseBody(t, h.multipart(owner.PublicID, `{}`, nil, "empty.mp3"), 400)
-	responseBody(t, h.multipart(owner.PublicID, `{}`, []byte("not audio"), "bad.mp3"), 400)
+	requireUploadFailure(t, h.finishUploadHTTP(
+		owner.PublicID, `{}`, []byte("not audio"), "bad.mp3"), "unsupported_audio")
+	responseBody(t, h.multipartWithKey(owner.PublicID, "", `{}`, data, "single.mp3"), http.StatusBadRequest)
 	responseBody(t, h.multipart(owner.PublicID, `{}`, make([]byte, (2<<20)+1), "big.mp3"), 413)
 	responseBody(t, h.request(
 		"POST",
-		"/ingest/tracks",
+		uploadsPath,
 		owner.PublicID,
 		strings.NewReader("bad"),
-		map[string]string{"Content-Type": "application/json"},
+		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "wrong-content-type"},
 	), 400)
 	responseBody(t, h.request(
 		"GET",
@@ -835,15 +846,9 @@ func TestMissingAndCorruptBlobReturnCleanErrors(t *testing.T) {
 		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
 			h := newRig(t)
 			owner := h.user("owner")
-			result, err := h.fixedService(nil, nil).Upload(
-				context.Background(),
-				ingest.UploadInput{OwnerID: owner.ID},
-				bytes.NewReader(bytes.Repeat([]byte{42}, 100000)),
-			)
-			if err != nil {
-				t.Fatal(err)
-			}
-			blob, err := h.blobs.GetByID(context.Background(), *result.Track.BlobID)
+			track := h.uploadTrack(t.Context(), h.fixedService(nil, nil),
+				ingest.UploadInput{OwnerID: owner.ID}, bytes.Repeat([]byte{42}, 100000))
+			blob, err := h.blobs.GetByID(context.Background(), *track.BlobID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -872,7 +877,7 @@ func TestMissingAndCorruptBlobReturnCleanErrors(t *testing.T) {
 			}
 			response := h.request(
 				"GET",
-				"/stream/"+string(result.Track.PublicID),
+				"/stream/"+string(track.PublicID),
 				owner.PublicID,
 				nil,
 				map[string]string{"Range": "bytes=0-99"},
@@ -897,11 +902,8 @@ func TestUploadRejectsMissingBlob(t *testing.T) {
 	data := []byte("fixed audio content")
 	input := ingest.UploadInput{OwnerID: owner.ID, OriginalFilename: "track.mp3"}
 
-	uploaded, err := svc.Upload(ctx, input, bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobID := *uploaded.Track.BlobID
+	uploaded := h.uploadTrack(ctx, svc, input, data)
+	blobID := *uploaded.BlobID
 	blob, err := h.blobs.GetByID(ctx, blobID)
 	if err != nil {
 		t.Fatal(err)
@@ -911,12 +913,12 @@ func TestUploadRejectsMissingBlob(t *testing.T) {
 	}
 
 	input.ForceDup = true
-	result, err := svc.Upload(ctx, input, bytes.NewReader(data))
+	result, err := svc.Accept(ctx, input, "missing-blob", bytes.NewReader(data))
 	if result != nil || !errors.Is(err, domain.ErrBlobFileMissing) {
 		t.Fatalf("result=%v, err=%v, want ErrBlobFileMissing", result, err)
 	}
-	if got := h.count("tracks"); got != 1 {
-		t.Fatalf("tracks=%d, want 1", got)
+	if h.count("tracks") != 1 || h.count("track_uploads") != 1 {
+		t.Fatal("missing blob registered an additional track or upload")
 	}
 
 	blob, err = h.blobs.GetByID(ctx, blobID)
@@ -940,15 +942,15 @@ func TestContainerMimeMatchesStream(t *testing.T) {
 	} {
 		t.Run(tc.format, func(t *testing.T) {
 			data := audio(t, tc.format, tc.encoder, tc.extra...)
-			got, err := prober.NewFprobe("").Probe(
+			got, err := prober.NewFFprobe("").Probe(
 				context.Background(),
 				bytes.NewReader(data),
 				int64(len(data)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.MimeType != tc.mime {
-				t.Fatalf("container %s returned %s, want %s", tc.format, got.MimeType, tc.mime)
+			if got.MIMEType != tc.mime {
+				t.Fatalf("container %s returned %s, want %s", tc.format, got.MIMEType, tc.mime)
 			}
 		})
 	}
@@ -987,21 +989,20 @@ func TestUploadMetadataResolveOnlyForNewTrack(t *testing.T) {
 				ghost := h.ghost(owner, true)
 				input.GhostID = &ghost.PublicID
 			}
-			result, err := svc.Upload(context.Background(), input, bytes.NewReader([]byte("audio")))
 			if ghostUpload {
-				if err != nil {
-					t.Fatalf("ghost upload called Resolve or failed: %v", err)
-				}
-				if result.Track.PublicID != *input.GhostID {
+				track := h.uploadTrack(t.Context(), svc, input, []byte("audio"))
+				if track.PublicID != *input.GhostID {
 					t.Fatal("ghost identity changed")
 				}
 				return
 			}
-			if !errors.Is(err, sentinel) {
-				t.Fatalf("new-track error = %v, want resolve error", err)
+			item, err := svc.Accept(t.Context(), input, "resolve-error", strings.NewReader("audio"))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if result != nil || h.count("tracks") != 0 || h.count("blobs") != 0 {
-				t.Fatal("resolve failure left a result or registered track/blob")
+			h.waitFailedAttempt(t.Context(), svc, item, sentinel)
+			if h.count("tracks") != 0 || h.count("blobs") != 1 {
+				t.Fatal("resolve failure created a track or discarded the file needed for retry")
 			}
 		})
 	}

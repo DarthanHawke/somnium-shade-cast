@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
@@ -110,4 +111,48 @@ func (r *blobReader) Close() error {
 		return fmt.Errorf("error closing blob reader: %v", err)
 	}
 	return nil
+}
+
+// blobReaderAt использует тот же алгоритм проверки и расшифровки чанков.
+// Последний прочитанный чанк остаётся в памяти для повторных чтений.
+type blobReaderAt struct {
+	mu     sync.Mutex
+	reader *blobReader
+}
+
+func (r *blobReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if off < 0 {
+		return 0, fmt.Errorf("storage.ReadAt: negative offset %d", off)
+	}
+	reader := r.reader
+	blob := reader.blob
+	var total int
+	for len(p) > 0 && off < blob.SizePlain {
+		index := off / int64(blob.ChunkSize)
+		if index != reader.chunkIndex || reader.plainBuffer == nil {
+			reader.chunkIndex = index
+			reader.plainBuffer = nil
+			if err := reader.loadChunk(); err != nil {
+				return total, err
+			}
+		}
+		n := copy(p, reader.plainBuffer[off%int64(blob.ChunkSize):])
+		total += n
+		off += int64(n)
+		p = p[n:]
+	}
+	if len(p) > 0 {
+		return total, io.EOF
+	}
+	return total, nil
+}
+
+func (r *blobReaderAt) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reader.plainBuffer = nil
+	return r.reader.Close()
 }

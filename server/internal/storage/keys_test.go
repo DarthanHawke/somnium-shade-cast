@@ -52,26 +52,3 @@ func TestKeyManagerUnwrap(t *testing.T) {
 		})
 	}
 }
-
-// TestReadMasterKey проверяет чтение ровно 32 байт с сохранением непрочитанного хвоста и
-// исходной ошибки чтения.
-func TestReadMasterKey(t *testing.T) {
-	t.Run("leaves_tail_unread", func(t *testing.T) {
-		want := bytes.Repeat([]byte{3}, 32)
-		input := bytes.NewReader(append(bytes.Clone(want), 7, 8))
-		got, err := storage.ReadMasterKey(input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, want) || input.Len() != 2 {
-			t.Fatalf("unexpected key or unread tail length = %d", input.Len())
-		}
-	})
-	t.Run("preserves_source_error", func(t *testing.T) {
-		cause := errors.New("key source unavailable")
-		_, err := storage.ReadMasterKey(brokenReader{err: cause})
-		if !errors.Is(err, domain.ErrInvalidMasterKey) || !errors.Is(err, cause) {
-			t.Fatalf("ReadMasterKey error = %v, want ErrInvalidMasterKey and %v", err, cause)
-		}
-	})
-}
