@@ -36,7 +36,7 @@ CREATE TABLE pending_events (
 
 -- Кэш библиотеки для быстрого UI и офлайн-просмотра
 CREATE TABLE cached_library (
-    server_profile_id INTEGER NOT NULL,
+    server_profile_id INTEGER NOT NULL REFERENCES server_profiles(id) ON DELETE CASCADE,
     entity      TEXT NOT NULL CHECK (entity IN ('track','album','artist')),
     public_id   TEXT NOT NULL,
     data_json   TEXT NOT NULL,
