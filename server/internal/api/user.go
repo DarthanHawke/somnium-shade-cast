@@ -22,6 +22,9 @@ type UserRepository interface {
 	// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 	GetByPublicID(ctx context.Context, publicID domain.PublicID) (*domain.User, error)
 
+	// List возвращает всех пользователей, включая неактивных, по имени.
+	List(ctx context.Context) ([]domain.User, error)
+
 	// Deactivate помечает пользователя с publicID как неактивного, сохраняя его запись.
 	// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 	Deactivate(ctx context.Context, publicID domain.PublicID) error
@@ -29,6 +32,9 @@ type UserRepository interface {
 	// Activate помечает пользователя с publicID как активного.
 	// Если пользователь отсутствует, возвращает domain.ErrNotFound.
 	Activate(ctx context.Context, publicID domain.PublicID) error
+
+	// Delete удаляет профиль и его треки или возвращает domain.ErrNotFound.
+	Delete(ctx context.Context, publicID domain.PublicID) error
 }
 
 // UserHandler — HTTP-обработчик для работы с пользователями.
@@ -121,6 +127,31 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// ListUsers возвращает список профилей для выбора пользователя.
+// Если пользователей нет, возвращает пустой JSON-массив.
+//
+// @Summary Получить список пользователей
+// @Tags Users
+// @Produce json
+// @Success 200 {array} dto.UserResponse "Список пользователей"
+// @Failure 500 {object} respond.ErrorBody "Внутренняя ошибка сервера"
+// @Security DevAuth
+// @Router /users [get]
+func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.users.List(r.Context())
+	if err != nil {
+		respond.WriteError(w, h.log, err)
+		return
+	}
+
+	response := make([]dto.UserResponse, 0, len(users))
+	for i := range users {
+		response = append(response, dto.NewUserResponse(&users[i]))
+	}
+
+	respond.JSON(w, http.StatusOK, response)
+}
+
 // ActivateUser помечает пользователя активным.
 //
 // @Summary Активировать пользователя
@@ -173,4 +204,28 @@ func (h *UserHandler) DeactivateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, http.StatusOK, dto.SuccessResponse{Message: dto.Deactivate})
+}
+
+// DeleteUser удаляет профиль и его треки.
+//
+// @Summary Удалить пользователя
+// @Tags Users
+// @Param publicID path string true "Публичный ID пользователя"
+// @Success 204 "Пользователь удалён"
+// @Failure 400 {object} respond.ErrorBody "Неверный ID"
+// @Failure 404 {object} respond.ErrorBody "Пользователь не найден"
+// @Failure 500 {object} respond.ErrorBody "Внутренняя ошибка сервера"
+// @Security DevAuth
+// @Router /users/{publicID} [delete]
+func (h *UserHandler) DeleteDevUser(w http.ResponseWriter, r *http.Request) {
+	publicID := domain.PublicID(pathParam(r, "publicID"))
+	if err := publicID.Validate(); err != nil {
+		respond.WriteError(w, h.log, err)
+		return
+	}
+	if err := h.users.Delete(r.Context(), publicID); err != nil {
+		respond.WriteError(w, h.log, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

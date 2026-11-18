@@ -119,6 +119,7 @@ func (r *ArtistRepository) GetByPublicID(
 }
 
 // Update сохраняет редактируемые поля исполнителя.
+// При изменении имени SQLite обновляет поиск по связанным трекам.
 // Если исполнитель отсутствует, возвращает domain.ErrNotFound.
 // При нарушении уникальности возвращает domain.ErrConflict.
 func (r *ArtistRepository) Update(ctx context.Context, artist *domain.Artist) error {

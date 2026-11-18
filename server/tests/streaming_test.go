@@ -18,17 +18,11 @@ func TestStreamingDeniesAccessToAnotherUsersTrack(t *testing.T) {
 	owner := h.user("owner")
 	other := h.user("other")
 
-	result, err := h.fixedService(nil, nil).Upload(
-		context.Background(),
-		ingest.UploadInput{OwnerID: owner.ID},
-		bytes.NewReader([]byte("private track payload")),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	track := h.uploadTrack(t.Context(), h.fixedService(nil, nil),
+		ingest.UploadInput{OwnerID: owner.ID}, []byte("private track payload"))
 
 	for _, pattern := range []string{"/stream/%s", "/tracks/%s/download"} {
-		path := fmt.Sprintf(pattern, result.Track.PublicID)
+		path := fmt.Sprintf(pattern, track.PublicID)
 		t.Logf("checking %s", path)
 
 		response := h.request(http.MethodGet, path, other.PublicID, nil, nil)

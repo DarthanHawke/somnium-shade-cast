@@ -2,6 +2,7 @@ package domain
 
 import "time"
 
+// JobType определяет обработчик для записи в очереди jobs.
 type JobType string
 
 const (
@@ -13,50 +14,32 @@ const (
 	JobDecayGraph     JobType = "decay_graph"
 	JobBackupDB       JobType = "backup_db"
 	JobSendScrobbles  JobType = "send_scrobbles"
+	JobCollectBlobs   JobType = "collect_blobs"
+	JobUploadTrack    JobType = "upload_track"
+	JobPruneFinished  JobType = "prune_finished_jobs"
 )
 
-type JobStatus string
-
-const (
-	JobPending JobStatus = "pending"
-	JobRunning JobStatus = "running"
-	JobDone    JobStatus = "done"
-	JobFailed  JobStatus = "failed"
-	JobDead    JobStatus = "dead"
-)
-
+// Job содержит данные задачи для постановки и выполнения воркером.
 type Job struct {
 	ID          ID
 	Type        JobType
-	Payload     []byte
-	Status      JobStatus
+	Payload     string
 	Priority    int
 	Attempts    int
 	MaxAttempts int
-	RunAfter    time.Time
+	RunAfter    UnixTimeMillis
 	DedupKey    string
-	LastError   string
+	Every       time.Duration
+	LeaseToken  string
 }
 
-// NextBackoff возвращает задержку повторной попытки, ограниченную шестью часами.
-func (j *Job) NextBackoff() time.Duration {
+// RetryDelay возвращает задержку после текущей попытки, от минуты до шести часов.
+func (j Job) RetryDelay() time.Duration {
 	const maxDelay = 6 * time.Hour
 
 	delay := time.Minute
-	for i := 0; i < j.Attempts && delay < maxDelay; i++ {
+	for attempt := 1; attempt < j.Attempts && delay < maxDelay; attempt++ {
 		delay *= 4
 	}
 	return min(delay, maxDelay)
-}
-
-// Fail переводит job в failed/dead и назначает время ретрая
-func (j *Job) Fail(errMsg string, now time.Time) {
-	j.Attempts++
-	j.LastError = errMsg
-	if j.Attempts >= j.MaxAttempts {
-		j.Status = JobDead
-		return
-	}
-	j.Status = JobFailed
-	j.RunAfter = now.Add(j.NextBackoff())
 }

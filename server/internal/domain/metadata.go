@@ -1,6 +1,6 @@
 package domain
 
-// ExtractedMetadata - метаданные, извлечённые из файла и/или заданные извне
+// ExtractedMetadata содержит теги и технические характеристики аудиофайла.
 type ExtractedMetadata struct {
 	// Из тегов
 	Title       string
@@ -14,14 +14,14 @@ type ExtractedMetadata struct {
 
 	// Из ffprobe
 	Codec       string
-	MimeType    string
+	MIMEType    string
 	DurationMS  *int64
 	BitrateKbps *int
 	SampleRate  *int
+	Channels    *int
 
 	// Обложка из тегов
 	CoverData []byte
-	CoverMime string
 
 	// Источник метаданных: file | fallback | user
 	Source MetadataSource
@@ -35,10 +35,3 @@ const (
 	MetaSourceFallback MetadataSource = "fallback"
 	MetaSourceUser     MetadataSource = "user"
 )
-
-// ResolvedMetadata — метаданные + artist, album
-type ResolvedMetadata struct {
-	Extracted ExtractedMetadata
-	Artist    *Artist
-	Album     *Album
-}

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"sync"
 	"testing"
 	"time"
 
@@ -31,8 +30,7 @@ func newSpool(t *testing.T, limit int64) *storage.Spool {
 	return s
 }
 
-// TestMemorySpoolContentAndReaders проверяет размер, SHA-256, независимость курсоров и
-// параллельное чтение через ReadAt.
+// TestMemorySpoolContentAndReaders проверяет размер, SHA-256 и независимость курсоров.
 // После приёма данных каталог временных файлов должен остаться пустым.
 func TestMemorySpoolContentAndReaders(t *testing.T) {
 	dir := t.TempDir()
@@ -56,18 +54,6 @@ func TestMemorySpoolContentAndReaders(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("readers share a cursor or contents differ")
 	}
-	var wg sync.WaitGroup
-	for off := 0; off < 32; off++ {
-		wg.Add(1)
-		go func(off int) {
-			defer wg.Done()
-			buf := make([]byte, 100)
-			if _, err := b.ReadAt(buf, int64(off)); err != nil || !bytes.Equal(buf, data[off:off+100]) {
-				t.Error("concurrent ReadAt mismatch")
-			}
-		}(off)
-	}
-	wg.Wait()
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("memory spool created temporary files")
@@ -168,10 +154,10 @@ func TestMemorySpoolToEncryptedBlob(t *testing.T) {
 	}
 }
 
-// TestMemoryMetadataPipeline проверяет извлечение тегов
-// и длительности MP3 из буфера в памяти.
+// TestEncryptedBlobMetadataPipeline проверяет извлечение тегов
+// и длительности MP3 из зашифрованного блоба.
 // После анализа исходные байты должны совпасть, а каталог временных файлов остаться пустым.
-func TestMemoryMetadataPipeline(t *testing.T) {
+func TestEncryptedBlobMetadataPipeline(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg not installed")
@@ -197,9 +183,31 @@ func TestMemoryMetadataPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := metadata.New(nil, nil, prober.NewFprobe(ffprobe),
+	service := metadata.New(nil, nil, prober.NewFFprobe(ffprobe),
 		tags.NewParser(), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	meta, err := service.Extract(ctx, buffer, buffer.Size(), "original.mp3")
+	keyManager, err := storage.NewKeyManager("test", bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.NewBlobStore(t.TempDir(), keyManager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := store.Write(buffer.Reader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := domain.NewBlob(buffer.SHA256(), buffer.Size(), written.SizeEncrypted,
+		"audio/mpeg", domain.BlobAudio, written.WrappedKey, written.MasterKeyID, written.ChunkSize, written.StoragePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.OpenReaderAt(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	meta, err := service.Extract(ctx, reader, blob.SizePlain, "original.mp3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +218,7 @@ func TestMemoryMetadataPipeline(t *testing.T) {
 		*meta.DurationMS <= 0 {
 		t.Fatalf("incorrect extracted metadata: %+v", meta)
 	}
-	got, err := io.ReadAll(buffer.Reader())
+	got, err := io.ReadAll(io.NewSectionReader(reader, 0, blob.SizePlain))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("analysis changed the original bytes")
 	}

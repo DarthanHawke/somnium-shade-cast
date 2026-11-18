@@ -30,6 +30,14 @@ var (
 	ErrForbidden = errors.New("forbidden")
 )
 
+// Ошибки загрузки.
+var (
+	// ErrUploadTargetUnavailable означает, что загрузку нельзя привязать к выбранному ghost-треку.
+	ErrUploadTargetUnavailable = errors.New("upload target unavailable")
+	// ErrDuplicateAudio - у пользователя уже есть этот файл.
+	ErrDuplicateAudio = fmt.Errorf("duplicate audio: %w", ErrConflict)
+)
+
 // Ошибки Blobs:
 var (
 	// ErrBlobAlreadyExist - уже зарегистрирован блоб с таким SHA-256

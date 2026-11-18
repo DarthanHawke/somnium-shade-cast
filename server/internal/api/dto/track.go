@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/ingest"
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/library"
 )
 
@@ -17,6 +16,7 @@ type AlbumSummary struct {
 	Title    string `json:"title"`
 }
 
+// TrackResponse содержит публичные метаданные трека и ссылки на связанные объекты.
 type TrackResponse struct {
 	PublicID string        `json:"public_id"`
 	Artist   ArtistSummary `json:"artist"`
@@ -33,6 +33,7 @@ type TrackResponse struct {
 	Codec       string `json:"codec"`
 	BitrateKbps *int   `json:"bitrate_kbps"`
 	SampleRate  *int   `json:"sample_rate"`
+	Channels    *int   `json:"channels"` // Число каналов аудио. Null, если неизвестно.
 	LastfmURL   string `json:"lastfm_url"`
 	// CoverURL содержит путь к обложке альбома.
 	// Если обложка не задана, поле передаётся как null.
@@ -41,44 +42,6 @@ type TrackResponse struct {
 	CreatedAt int64 `json:"created_at"`
 	// UpdatedAt содержит время последнего обновления в миллисекундах с начала эпохи Unix.
 	UpdatedAt int64 `json:"updated_at"`
-}
-
-// NewUploadedTrackResponse — создает TrackResponse из ingest.UploadResult.
-func NewUploadedTrackResponse(result *ingest.UploadResult) TrackResponse {
-	track := result.Track
-
-	response := TrackResponse{
-		PublicID:    string(track.PublicID),
-		Title:       track.Title,
-		TrackNo:     track.TrackNo,
-		DiscNo:      track.DiscNo,
-		DurationMS:  track.DurationMS,
-		Status:      string(track.Status),
-		Codec:       track.Codec,
-		BitrateKbps: track.BitrateKbps,
-		SampleRate:  track.SampleRate,
-		LastfmURL:   track.LastfmURL,
-		CreatedAt:   track.CreatedAt.UnixMilli(),
-		UpdatedAt:   track.UpdatedAt.UnixMilli(),
-		Artist: ArtistSummary{
-			PublicID: string(result.Artist.PublicID),
-			Name:     result.Artist.Name,
-		},
-	}
-
-	if album := result.Album; album != nil {
-		response.Album = &AlbumSummary{
-			PublicID: string(album.PublicID),
-			Title:    album.Title,
-		}
-
-		if album.CoverBlobID != nil {
-			url := "/lib/tracks/" + string(track.PublicID) + "/cover"
-			response.CoverURL = &url
-		}
-	}
-
-	return response
 }
 
 // NewTrackResponse — создает TrackResponse из library.TrackView.
@@ -93,6 +56,7 @@ func NewTrackResponse(view *library.TrackView) TrackResponse {
 		Codec:       view.Codec,
 		BitrateKbps: view.BitrateKbps,
 		SampleRate:  view.SampleRate,
+		Channels:    view.Channels,
 		LastfmURL:   view.LastfmURL,
 		CreatedAt:   view.CreatedAt.UnixMilli(),
 		UpdatedAt:   view.UpdatedAt.UnixMilli(),

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"io"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
@@ -99,17 +98,4 @@ func dekAEAD(dek []byte) (cipher.AEAD, error) {
 		return nil, fmt.Errorf("%s: %v", op, err)
 	}
 	return aead, nil
-}
-
-// ReadMasterKey читает следующие 32 байта из r как мастер-ключ.
-// При ошибке чтения возвращает domain.ErrInvalidMasterKey, сохраняя исходную причину.
-// Оставляет последующие байты непрочитанными и не закрывает r.
-func ReadMasterKey(r io.Reader) ([]byte, error) {
-	const op = "storage.ReadMasterKey"
-
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(r, key); err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", domain.ErrInvalidMasterKey, op, err)
-	}
-	return key, nil
 }

@@ -36,19 +36,20 @@ const (
 )
 
 type Blob struct {
-	ID            ID             `db:"id"`
-	SHA256Plain   string         `db:"sha256_plain"`
-	SizePlain     int64          `db:"size_plain"`
-	SizeEncrypted int64          `db:"size_encrypted"`
-	MimeType      string         `db:"mime_type"`
-	Kind          BlobKind       `db:"kind"`
-	EncAlgo       string         `db:"enc_algo"`
-	EncKeyWrapped []byte         `db:"enc_key_wrapped"`
-	MasterKeyID   string         `db:"master_key_id"`
-	ChunkSize     int            `db:"chunk_size"`
-	StoragePath   string         `db:"storage_path"`
-	RefCount      int            `db:"ref_count"`
-	CreatedAt     UnixTimeMillis `db:"created_at"`
+	ID            ID       `db:"id"`
+	SHA256Plain   string   `db:"sha256_plain"`
+	SizePlain     int64    `db:"size_plain"`
+	SizeEncrypted int64    `db:"size_encrypted"`
+	MIMEType      string   `db:"mime_type"`
+	Kind          BlobKind `db:"kind"`
+	EncAlgo       string   `db:"enc_algo"`
+	EncKeyWrapped []byte   `db:"enc_key_wrapped"`
+	MasterKeyID   string   `db:"master_key_id"`
+	ChunkSize     int      `db:"chunk_size"`
+	// StoragePath — относительный ключ с разделителем /.
+	StoragePath string         `db:"storage_path"`
+	RefCount    int            `db:"ref_count"`
+	CreatedAt   UnixTimeMillis `db:"created_at"`
 }
 
 // NewBlob - конструктор
@@ -80,7 +81,7 @@ func NewBlob(shaPlain string, sizePlain, sizeEnc int64, mime string, kind BlobKi
 		SHA256Plain:   shaPlain,
 		SizePlain:     sizePlain,
 		SizeEncrypted: sizeEnc,
-		MimeType:      mime,
+		MIMEType:      mime,
 		Kind:          kind,
 		EncAlgo:       EncAlgoAESGCM,
 		EncKeyWrapped: wrappedKey,

@@ -129,6 +129,7 @@ func (r *AlbumRepository) GetByPublicID(
 }
 
 // Update сохраняет редактируемые поля альбома.
+// При изменении названия SQLite обновляет поиск по связанным трекам.
 // Если альбом отсутствует, возвращает domain.ErrNotFound.
 // При нарушении уникальности возвращает domain.ErrConflict.
 func (r *AlbumRepository) Update(ctx context.Context, album *domain.Album) error {
@@ -238,4 +239,15 @@ func (r *AlbumRepository) Search(
 		return nil, wrapDBError(op, err)
 	}
 	return albums, nil
+}
+
+// SetCoverIfAbsent сохраняет первую обложку альбома.
+// Привязывает только блоб с типом image.
+func (r *AlbumRepository) SetCoverIfAbsent(ctx context.Context, albumID, blobID domain.ID) error {
+	const query = `
+		UPDATE albums SET cover_blob_id = ?2, updated_at = CAST(round(unixepoch('subsec') * 1000) AS INTEGER)
+		WHERE id = ?1 AND cover_blob_id IS NULL
+		    AND EXISTS (SELECT 1 FROM blobs WHERE id = ?2 AND kind = 'image')`
+	_, err := r.db.executor(ctx).ExecContext(ctx, query, albumID, blobID)
+	return wrapDBError("album.SetCoverIfAbsent", err)
 }

@@ -9,15 +9,19 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
 // BlobStore сохраняет зашифрованные файлы блобов и открывает их для чтения с расшифровкой.
 type BlobStore struct {
-	root string // корень хранилища, прим. /var/lib/musicapp/blobs
-	keys *KeyManager
+	root      string // корень хранилища, прим. /var/lib/musicapp/blobs
+	keys      *KeyManager
+	mutations sync.RWMutex
 }
 
 // WriteResult содержит путь и параметры сохранённого зашифрованного файла
@@ -40,17 +44,30 @@ func NewBlobStore(root string, keys *KeyManager) (*BlobStore, error) {
 	return &BlobStore{root: root, keys: keys}, nil
 }
 
+// ProtectUpload защищает выбор или запись блоба до фиксации его метаданных.
+// Вызывать до обращения к БД и освобождать после commit или rollback.
+// Другие загрузки могут выполняться параллельно.
+func (s *BlobStore) ProtectUpload() func() {
+	s.mutations.RLock()
+	return s.mutations.RUnlock
+}
+
 // blobPath возвращает абсолютный путь к файлу относительно корня хранилища.
 func (s *BlobStore) blobPath(rel string) string {
-	return filepath.Join(s.root, rel)
+	return filepath.Join(s.root, filepath.FromSlash(canonicalStoragePath(rel)))
 }
 
 // newStoragePath создаёт случайный относительный путь с двумя уровнями каталогов.
+// canonicalStoragePath приводит старые ключи Windows к формату с прямыми слешами.
+func canonicalStoragePath(rel string) string {
+	return strings.ReplaceAll(rel, `\`, "/")
+}
+
 func newStoragePath() string {
 	var id [32]byte
 	rand.Read(id[:])
 	name := hex.EncodeToString(id[:])
-	return filepath.Join(name[:2], name[2:4], name+".enc")
+	return path.Join(name[:2], name[2:4], name+".enc")
 }
 
 // Write читает src до конца, шифрует данные и сохраняет их в новом файле.
@@ -121,6 +138,14 @@ func (s *BlobStore) Write(src io.Reader) (*WriteResult, error) {
 // Вызывающий код должен закрыть возвращённый поток, в том числе после ошибки чтения.
 // Если файл отсутствует, возвращает domain.ErrBlobFileMissing.
 func (s *BlobStore) OpenRange(b *domain.Blob, offset, length int64) (io.ReadCloser, domain.ByteRange, error) {
+	reader, rng, err := s.openRange(b, offset, length)
+	if err != nil {
+		return nil, domain.ByteRange{}, err
+	}
+	return reader, rng, nil
+}
+
+func (s *BlobStore) openRange(b *domain.Blob, offset, length int64) (*blobReader, domain.ByteRange, error) {
 	const op = "storage.OpenRange"
 
 	rng, err := b.ResolveRange(offset, length)
@@ -148,6 +173,22 @@ func (s *BlobStore) OpenRange(b *domain.Blob, offset, length int64) (io.ReadClos
 		return nil, domain.ByteRange{}, err
 	}
 	return r, rng, nil
+}
+
+// ReadAtCloser даёт произвольный доступ к содержимому и владеет файлом.
+type ReadAtCloser interface {
+	io.ReaderAt
+	io.Closer
+}
+
+// OpenReaderAt открывает зашифрованный блоб для чтения по смещениям.
+// Первый чанк проверяется при открытии. Остальные расшифровываются по запросу.
+func (s *BlobStore) OpenReaderAt(b *domain.Blob) (ReadAtCloser, error) {
+	reader, _, err := s.openRange(b, 0, -1)
+	if err != nil {
+		return nil, err
+	}
+	return &blobReaderAt{reader: reader}, nil
 }
 
 // Open открывает всё расшифрованное содержимое блоба.

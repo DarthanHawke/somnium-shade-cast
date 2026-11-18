@@ -4,6 +4,7 @@ package prober
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -19,21 +20,21 @@ type FFprobe struct {
 }
 
 // NewFFprobe создаёт анализатор. Если path пуст, ffprobe ищется в PATH.
-func NewFprobe(ffprobePath string) *FFprobe {
+func NewFFprobe(ffprobePath string) *FFprobe {
 	return &FFprobe{ffprobePath: ffprobePath}
 }
 
 // ProbeResult содержит характеристики первого аудиопотока и его контейнера.
 type ProbeResult struct {
 	Codec       string // "mp3", "flac", "aac", "ogg"
-	MimeType    string // "audio/mpeg", "audio/flac", ...
+	MIMEType    string // "audio/mpeg", "audio/flac", ...
 	DurationMS  *int64
 	BitrateKbps int
 	SampleRate  int // Hz
 	Channels    int
 }
 
-// ffprobeOutput описывает JSON-структуру, возвращаемую ffprobe
+// ffprobeOutput описывает JSON, возвращаемый ffprobe.
 type ffprobeOutput struct {
 	Format struct {
 		FormatName string `json:"format_name"`
@@ -43,7 +44,7 @@ type ffprobeOutput struct {
 	Streams []ffprobeStream `json:"streams"`
 }
 
-// ffprobeStream описывает JSON-структуру аудиопотока, возвращаемую ffprobe
+// ffprobeStream описывает поля аудиопотока в JSON ffprobe.
 type ffprobeStream struct {
 	CodecName  string `json:"codec_name"`
 	CodecType  string `json:"codec_type"`
@@ -54,7 +55,7 @@ type ffprobeStream struct {
 
 // Probe извлекает характеристики первого аудиопотока.
 // Длительность может быть неизвестна. Метод учитывает отмену контекста.
-func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*ProbeResult, error) {
+func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (result *ProbeResult, resultErr error) {
 	const op = "prober.Probe"
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -77,9 +78,15 @@ func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*Prob
 
 	input, err := newProbeInput(ctx, src, size)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: start memory input: %v", ErrUnavailable, op, err)
+		return nil, fmt.Errorf("%w: %s: start audio input: %v", ErrUnavailable, op, err)
 	}
-	defer input.Close()
+	defer func() {
+		closeErr := input.Close()
+		if closeErr != nil && resultErr == nil {
+			result = nil
+			resultErr = fmt.Errorf("%s: close probe input: %w: %w", op, ErrUnavailable, closeErr)
+		}
+	}()
 
 	// -v error: только ошибки, без лишнего шума
 	// -print_format json: вывод в JSON
@@ -96,15 +103,17 @@ func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*Prob
 	)
 
 	out, err := cmd.Output()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("%s: %w", op, ctxErr)
+	}
+	if readErr := input.reader.firstError(); readErr != nil {
+		return nil, fmt.Errorf("%s: read audio source: %w: %w", op, ErrUnavailable, readErr)
+	}
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("%s: %w", op, ctxErr)
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && input.requested.Load() && exitErr.ExitCode() == 1 && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("%s: %w: %s", op, ErrInvalidFile, strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		// ffprobe возвращает non-zero exit при ошибке парсинга
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("%w: %s: %s", ErrInvalidFile, op, string(exitErr.Stderr))
-		}
-		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, op, err)
+		return nil, fmt.Errorf("%s: execute ffprobe: %w: %w", op, ErrUnavailable, err)
 	}
 
 	var raw ffprobeOutput
@@ -112,7 +121,6 @@ func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*Prob
 		return nil, fmt.Errorf("%w: %s: parse output: %v", ErrUnavailable, op, err)
 	}
 
-	// Находим аудиопоток
 	var audioStream *ffprobeStream
 	for i := range raw.Streams {
 		if raw.Streams[i].CodecType == "audio" {
@@ -124,13 +132,11 @@ func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*Prob
 		return nil, fmt.Errorf("%w: %s", ErrNotAudio, op)
 	}
 
-	// Парсим длительность
 	durationMS, err := parseDurationMS(raw.Format.Duration)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
-	// Битрейт
 	bitrateStr := raw.Format.BitRate
 	if bitrateStr == "" {
 		bitrateStr = audioStream.BitRate
@@ -142,7 +148,7 @@ func (p *FFprobe) Probe(ctx context.Context, src io.ReaderAt, size int64) (*Prob
 
 	return &ProbeResult{
 		Codec:       audioStream.CodecName,
-		MimeType:    mimeFromFormat(raw.Format.FormatName),
+		MIMEType:    mimeFromFormat(raw.Format.FormatName),
 		DurationMS:  durationMS,
 		BitrateKbps: bitrateKbps,
 		SampleRate:  sampleRate,
@@ -167,7 +173,7 @@ func parseDurationMS(value string) (*int64, error) {
 	return &durationMS, nil
 }
 
-// mimeFromFormat определяет MIME по контейнеру
+// mimeFromFormat определяет MIME по контейнеру.
 func mimeFromFormat(formatNames string) string {
 	for _, format := range strings.Split(formatNames, ",") {
 		switch format {

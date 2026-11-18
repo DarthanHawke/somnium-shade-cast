@@ -8,7 +8,7 @@ CREATE TABLE server_settings (
 ) STRICT;
 
 CREATE TABLE users (
-    id            INTEGER PRIMARY KEY,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
     public_id     TEXT NOT NULL UNIQUE,
     name          TEXT NOT NULL UNIQUE,
     display_name  TEXT NOT NULL DEFAULT '',

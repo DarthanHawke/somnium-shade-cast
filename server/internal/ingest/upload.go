@@ -2,6 +2,9 @@ package ingest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,295 +14,252 @@ import (
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/jobs"
 )
 
-// Upload принимает src, сохраняет аудиофайл и регистрирует загруженный трек.
-// Если задан input.GhostID, материализует существующий ghost-трек,
-// сохраняя его название, исполнителя, альбом и нумерацию.
-// При input.ForceDup == false отклоняет повторную загрузку файла
-// владельцем с ошибкой domain.ErrConflict. Не закрывает src.
-// Не поддерживает выполнение в контексте существующей транзакции.
-// Ошибки постановки фоновых задач логируются и не отменяют успешную загрузку.
-func (s *Service) Upload(
-	ctx context.Context,
-	input UploadInput,
-	src io.Reader,
-) (*UploadResult, error) {
-	if input.GhostID != nil {
-		if err := input.GhostID.Validate(); err != nil {
-			return nil, domain.Invalid("ghost_id", "malformed id")
-		}
-	}
+// ErrIdempotencyConflict означает повтор ключа с другими данными запроса.
+var ErrIdempotencyConflict = errors.New("idempotency key already used for another upload")
 
+// Accept сохраняет зашифрованный файл и атомарно регистрирует загрузку и задачу.
+// Тот же ключ с тем же файлом и параметрами возвращает существующую загрузку.
+func (s *Service) Accept(
+	ctx context.Context, input UploadInput, key string, src io.Reader,
+) (*domain.TrackUpload, error) {
+	if err := validateUploadInput(input, key); err != nil {
+		return nil, err
+	}
 	buffer, err := s.spool.Receive(ctx, src)
 	if err != nil {
 		return nil, err
 	}
 
-	extracted, err := s.metadata.Extract(ctx, buffer, buffer.Size(), input.OriginalFilename)
+	hash, err := uploadHash(input, buffer.SHA256())
 	if err != nil {
+		return nil, err
+	}
+	item, err := s.byKey(ctx, input.OwnerID, key, hash)
+	if err != nil || item != nil {
+		return item, err
+	}
+
+	release := s.store.ProtectUpload()
+	defer release()
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	sha := buffer.SHA256()
-	existingBlob, err := s.blobs.GetBySHA256(ctx, sha)
+	existing, err := s.blobs.GetBySHA256(ctx, sha)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
 
-	var newBlob *domain.Blob
-	if existingBlob == nil {
-		writeResult, err := s.store.Write(buffer.Reader())
+	if existing != nil && existing.Kind != domain.BlobAudio {
+		return nil, domain.Invalid("file", "not a supported audio file")
+	}
+
+	var written *domain.Blob
+	if existing == nil {
+		result, err := s.store.Write(buffer.Reader())
 		if err != nil {
 			return nil, err
 		}
-		newBlob, err = domain.NewBlob(
-			sha, buffer.Size(), writeResult.SizeEncrypted,
-			extracted.MimeType, domain.BlobAudio,
-			writeResult.WrappedKey, writeResult.MasterKeyID,
-			writeResult.ChunkSize, writeResult.StoragePath,
-		)
+		written, err = domain.NewBlob(sha, buffer.Size(), result.SizeEncrypted, "",
+			domain.BlobAudio, result.WrappedKey, result.MasterKeyID, result.ChunkSize, result.StoragePath)
 		if err != nil {
-			return nil, fmt.Errorf("ingest.Upload: create blob: %v", err)
+			return nil, fmt.Errorf("ingest.Accept: build blob metadata: %w", err)
 		}
 	}
 
-	if !input.ForceDup {
-		if err := s.checkDuplicate(ctx, input.OwnerID, sha); err != nil {
-			return nil, err
-		}
-	}
-
-	var result *UploadResult
 	err = s.tx.WithTransaction(ctx, func(ctx context.Context) error {
-		blobID, err := s.registerBlobTx(ctx, existingBlob, newBlob)
-		if err != nil {
+		prior, err := s.byKey(ctx, input.OwnerID, key, hash)
+		if err != nil || prior != nil {
+			item = prior
 			return err
 		}
 
-		if err := s.blobs.IncRef(ctx, blobID); err != nil {
+		registered, err := s.registerBlobTx(ctx, existing, written)
+		if err != nil {
 			return err
 		}
-		// Между первой проверкой и транзакцией мог появиться дубликат.
-		if !input.ForceDup {
-			if err := s.checkDuplicate(ctx, input.OwnerID, sha); err != nil {
+		if registered.Kind != domain.BlobAudio {
+			return domain.Invalid("file", "not a supported audio file")
+		}
+		id := domain.NewPublicID()
+		jobID, err := s.queue.Enqueue(ctx, domain.JobUploadTrack, uploadPayload{UploadID: id}, jobs.WithMaxAttempts(3))
+		if err != nil {
+			return err
+		}
+		if jobID == 0 {
+			return errors.New("ingest.Accept: no job registered for upload")
+		}
+		item = &domain.TrackUpload{
+			PublicID: id, OwnerID: input.OwnerID, IdempotencyKey: key, RequestHash: hash,
+			BlobID: &registered.ID, JobID: &jobID, OriginalFilename: input.OriginalFilename,
+			Fingerprint: input.Fingerprint, FPDuration: input.FPDuration, ForceDup: input.ForceDup,
+			GhostID: input.GhostID, Status: domain.UploadQueued, CreatedAt: domain.UnixTimeMillis(time.Now()),
+		}
+		return s.uploads.Insert(ctx, item)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (s *Service) byKey(ctx context.Context, owner domain.ID, key, hash string) (*domain.TrackUpload, error) {
+	item, err := s.uploads.ByKey(ctx, owner, key)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if item.RequestHash != hash {
+		return nil, ErrIdempotencyConflict
+	}
+	return item, nil
+}
+
+func uploadHash(input UploadInput, sha string) (string, error) {
+	data, err := json.Marshal(struct {
+		SHA         string           `json:"sha"`
+		Filename    string           `json:"filename"`
+		Fingerprint string           `json:"fingerprint"`
+		FPDuration  int              `json:"fp_duration"`
+		ForceDup    bool             `json:"force_dup"`
+		GhostID     *domain.PublicID `json:"ghost_id"`
+	}{sha, input.OriginalFilename, input.Fingerprint, input.FPDuration, input.ForceDup, input.GhostID})
+	if err != nil {
+		return "", fmt.Errorf("ingest.Accept: encode upload options: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func validateUploadInput(input UploadInput, key string) error {
+	if len(key) == 0 || len(key) > 128 {
+		return domain.Invalid("idempotency_key", "expected 1 to 128 visible ASCII characters")
+	}
+	for _, ch := range key {
+		if ch < 33 || ch > 126 {
+			return domain.Invalid("idempotency_key", "expected 1 to 128 visible ASCII characters")
+		}
+	}
+	if input.GhostID != nil && input.GhostID.Validate() != nil {
+		return domain.Invalid("ghost_id", "malformed id")
+	}
+	if input.FPDuration < 0 {
+		return domain.Invalid("fp_duration", "expected a nonnegative duration")
+	}
+	return nil
+}
+
+// Get возвращает загрузку владельца по публичному идентификатору.
+func (s *Service) Get(ctx context.Context, owner domain.ID, id domain.PublicID) (*domain.TrackUpload, error) {
+	if err := id.Validate(); err != nil {
+		return nil, err
+	}
+	return s.uploads.ForOwner(ctx, owner, id)
+}
+
+// List возвращает страницу собственных загрузок пользователя.
+func (s *Service) List(ctx context.Context, owner domain.ID, limit, offset int) ([]domain.TrackUpload, error) {
+	return s.uploads.ListForOwner(ctx, owner, limit, offset)
+}
+
+// Process анализирует принятый файл и фиксирует один результат загрузки.
+// Технические ошибки передаются воркеру для повторных попыток.
+func (s *Service) Process(ctx context.Context, raw json.RawMessage) error {
+	var payload uploadPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return jobs.Permanent(fmt.Errorf("ingest.Process: decode payload: %w", err))
+	}
+	if err := payload.UploadID.Validate(); err != nil {
+		return jobs.Permanent(err)
+	}
+	job, ok := jobs.AttemptFromContext(ctx)
+	if !ok {
+		return errors.New("ingest.Process: missing job lease")
+	}
+	item, err := s.uploads.ByPublicID(ctx, payload.UploadID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil // Владелец мог удалить профиль.
+	}
+	if err != nil {
+		return err
+	}
+	if item.BlobID == nil || item.JobID == nil || *item.JobID != job.ID {
+		return nil
+	}
+
+	blob, err := s.blobs.GetByID(ctx, *item.BlobID)
+	if err != nil {
+		return err
+	}
+	reader, err := s.store.OpenReaderAt(blob)
+	if err != nil {
+		return err
+	}
+	metadata, err := s.metadata.Extract(ctx, reader, blob.SizePlain, item.OriginalFilename)
+	closeErr := reader.Close()
+	if _, invalid := errors.AsType[*domain.ValidationError](err); invalid && closeErr == nil {
+		return s.reject(ctx, item.PublicID, job, "unsupported_audio")
+	}
+	if err := errors.Join(err, closeErr); err != nil {
+		return err
+	}
+
+	var existingCover, newCover *domain.Blob
+	if item.GhostID == nil && metadata.AlbumTitle != "" {
+		if mime := albumCoverMIME(metadata.CoverData); mime != "" {
+			release := s.store.ProtectUpload()
+			defer release()
+			existingCover, newCover, err = s.prepareAlbumCover(ctx, metadata.CoverData, mime)
+			if err != nil {
 				return err
 			}
 		}
-		if input.GhostID != nil {
-			result, err = s.materializeTx(ctx, input, extracted, blobID)
-		} else {
-			result, err = s.createTrackTx(ctx, input, extracted, blobID)
+	}
+
+	err = s.tx.WithTransaction(ctx, func(ctx context.Context) error {
+		ok, err := s.uploads.LockAttempt(ctx, item.PublicID, job)
+		if err != nil || !ok {
+			return err
 		}
-		return err
-	})
-	if err != nil {
-		if newBlob != nil {
-			if removeErr := s.store.Remove(newBlob.StoragePath); removeErr != nil {
-				s.log.Warn("failed to remove orphaned blob after transaction error",
-					"storage_path", newBlob.StoragePath, "err", removeErr)
-			} else {
-				s.log.Debug("removed orphaned blob after transaction error",
-					"storage_path", newBlob.StoragePath)
+		input := UploadInput{
+			OwnerID: item.OwnerID, OriginalFilename: item.OriginalFilename, GhostID: item.GhostID,
+			Fingerprint: item.Fingerprint, FPDuration: item.FPDuration, ForceDup: item.ForceDup,
+		}
+		result, err := s.saveTrackTx(ctx, input, metadata, blob.ID, blob.SHA256Plain)
+		if err != nil {
+			return err
+		}
+		if result.AlbumID != nil && (existingCover != nil || newCover != nil) {
+			cover, err := s.registerBlobTx(ctx, existingCover, newCover)
+			if err != nil {
+				return err
+			}
+			if err := s.album.SetCoverIfAbsent(ctx, *result.AlbumID, cover.ID); err != nil {
+				return err
 			}
 		}
-		return nil, err
-	}
-	// Enqueue jobs
-	s.enqueueJobs(ctx, result.Track.ID)
-
-	return result, nil
-}
-
-// createTrackTx создаёт трек по метаданным файла и добавляет его в поисковый индекс.
-// Поиск и создание исполнителя и альбома выполняются в той же транзакции.
-// ctx должен содержать транзакцию.
-func (s *Service) createTrackTx(
-	ctx context.Context,
-	req UploadInput,
-	extracted *domain.ExtractedMetadata,
-	blobID domain.ID,
-) (*UploadResult, error) {
-	artist, album, err := s.metadata.Resolve(ctx, extracted)
-	if err != nil {
-		return nil, err
-	}
-
-	var albumID *domain.ID
-	albumTitle := ""
-	if album != nil {
-		albumID = &album.ID
-		albumTitle = album.Title
-	}
-	track, err := domain.NewTrack(domain.NewTrackParams{
-		OwnerID:          req.OwnerID,
-		ArtistID:         artist.ID,
-		AlbumID:          albumID,
-		Title:            extracted.Title,
-		TrackNo:          extracted.TrackNo,
-		DiscNo:           extracted.DiscNo,
-		DurationMS:       extracted.DurationMS,
-		Status:           domain.TrackUploaded,
-		BlobID:           &blobID,
-		Fingerprint:      req.Fingerprint,
-		FPDuration:       req.FPDuration,
-		IsIntentionalDup: req.ForceDup,
-		OriginalFilename: req.OriginalFilename,
-		Codec:            extracted.Codec,
-		BitrateKbps:      extracted.BitrateKbps,
-		SampleRate:       extracted.SampleRate,
+		return s.uploads.Finish(ctx, item.PublicID, &result.PublicID, nil)
 	})
-	if err != nil {
-		return nil, err
-	}
-	if err := s.tracks.Insert(ctx, track); err != nil {
-		return nil, err
-	}
-	if err := s.search.Insert(ctx, track.ID, track.Title, artist.Name, albumTitle); err != nil {
-		return nil, err
-	}
-
-	return &UploadResult{
-		Track:  track,
-		Artist: artist,
-		Album:  album,
-	}, nil
-}
-
-// materializeTx прикрепляет загруженный файл к ghost-треку,
-// сохраняя его идентичность и нумерацию.
-// req.GhostID должен быть задан; ctx должен содержать транзакцию.
-func (s *Service) materializeTx(
-	ctx context.Context,
-	req UploadInput,
-	extracted *domain.ExtractedMetadata,
-	blobID domain.ID,
-) (*UploadResult, error) {
-	ghost, err := s.tracks.GetByPublicID(ctx, *req.GhostID)
-	if err != nil {
-		return nil, err
-	}
-	if ghost.OwnerID != req.OwnerID {
-		return nil, domain.ErrForbidden
-	}
-	if ghost.Status != domain.TrackGhost || ghost.BlobID != nil {
-		return nil, domain.ErrConflict
-	}
-
-	artist, err := s.artists.GetByID(ctx, ghost.ArtistID)
-	if err != nil {
-		return nil, err
-	}
-	var album *domain.Album
-	albumTitle := ""
-	if ghost.AlbumID != nil {
-		album, err = s.albums.GetByID(ctx, *ghost.AlbumID)
-		if err != nil {
-			return nil, err
-		}
-		albumTitle = album.Title
-	}
-
-	// Идентичность берётся из ghost; из загрузки переносим только данные файла.
-	ghost.BlobID = &blobID
-	ghost.Status = domain.TrackUploaded
-	ghost.DurationMS = extracted.DurationMS
-	ghost.Codec = extracted.Codec
-	ghost.BitrateKbps = extracted.BitrateKbps
-	ghost.SampleRate = extracted.SampleRate
-	ghost.OriginalFilename = req.OriginalFilename
-	ghost.Fingerprint = req.Fingerprint
-	ghost.FPDuration = req.FPDuration
-	ghost.IsIntentionalDup = req.ForceDup
-	ghost.UpdatedAt = domain.UnixTimeMillis(time.Now())
-
-	if err := s.tracks.Materialize(ctx, ghost); err != nil {
-		return nil, err
-	}
-	if err := s.search.Insert(ctx, ghost.ID, ghost.Title, artist.Name, albumTitle); err != nil {
-		return nil, err
-	}
-
-	return &UploadResult{
-		Track:  ghost,
-		Artist: artist,
-		Album:  album,
-	}, nil
-}
-
-// enqueueJobs запрашивает анализ и обогащение трека.
-// Ошибки постановки задач логируются и не передаются вызывающему коду.
-func (s *Service) enqueueJobs(ctx context.Context, trackID domain.ID) {
-	payload := map[string]any{"track_id": trackID}
-	if err := s.jobs.Enqueue(ctx, domain.JobAnalyzeAudio, payload,
-		jobs.WithDedupKey(fmt.Sprintf("analyze:%d", trackID)),
-		jobs.WithPriority(7),
-	); err != nil {
-		s.log.Warn("enqueue analyze failed", "track_id", trackID, "err", err)
-	}
-	if err := s.jobs.Enqueue(ctx, domain.JobEnrichTrack, payload,
-		jobs.WithDedupKey(fmt.Sprintf("enrich:%d", trackID)),
-		jobs.WithPriority(5),
-	); err != nil {
-		s.log.Warn("enqueue enrich failed", "track_id", trackID, "err", err)
-	}
-}
-
-// checkDuplicate возвращает domain.ErrConflict, если у владельца уже есть
-// загруженный трек с SHA-256 sha. При отсутствии совпадения возвращает nil.
-func (s *Service) checkDuplicate(ctx context.Context, ownerID domain.ID, sha string) error {
-	_, err := s.tracks.GetByOwnerAndSHA256(ctx, sha, ownerID)
 	switch {
-	case err == nil:
-		return domain.ErrConflict
-	case errors.Is(err, domain.ErrNotFound):
-		return nil
+	case errors.Is(err, domain.ErrDuplicateAudio):
+		return s.reject(ctx, item.PublicID, job, "duplicate_audio")
+	case errors.Is(err, domain.ErrUploadTargetUnavailable):
+		return s.reject(ctx, item.PublicID, job, "target_unavailable")
 	default:
 		return err
 	}
 }
 
-// registerBlobTx возвращает ID блоба для привязки трека.
-// Регистрирует newBlob либо использует ранее найденный existingBlob.
-// При конкурентной регистрации того же SHA-256 использует зарегистрированный блоб.
-// При успешном использовании чужой записи файл newBlob остаётся для GC.
-// ctx должен содержать транзакцию.
-func (s *Service) registerBlobTx(
-	ctx context.Context,
-	existingBlob, newBlob *domain.Blob,
-) (domain.ID, error) {
-	const op = "ingest.registerBlobTx"
-
-	if newBlob == nil {
-		if existingBlob == nil {
-			return 0, fmt.Errorf("%s: %w", op, domain.ErrNoBlobAvailable)
+// reject фиксирует публичный отказ, только если аренда попытки ещё действительна.
+func (s *Service) reject(ctx context.Context, id domain.PublicID, job domain.Job, code string) error {
+	return s.tx.WithTransaction(ctx, func(ctx context.Context) error {
+		ok, err := s.uploads.LockAttempt(ctx, id, job)
+		if err != nil || !ok {
+			return err
 		}
-		return s.reuseBlob(existingBlob)
-	}
-
-	if err := s.blobs.Insert(ctx, newBlob); err != nil {
-		if !errors.Is(err, domain.ErrBlobAlreadyExist) {
-			return 0, err
-		}
-
-		// Другая загрузка зарегистрировала тот же файл после нашей проверки.
-		registeredBlob, err := s.blobs.GetBySHA256(ctx, newBlob.SHA256Plain)
-		if err != nil {
-			return 0, err
-		}
-
-		return s.reuseBlob(registeredBlob)
-	}
-
-	return newBlob.ID, nil
-}
-
-// reuseBlob проверяет, что существующий блоб открывается, и возвращает его ID.
-func (s *Service) reuseBlob(blob *domain.Blob) (domain.ID, error) {
-	r, err := s.store.Open(blob)
-	if err != nil {
-		return 0, fmt.Errorf("ingest.reuseBlob: open blob %d: %w", blob.ID, err)
-	}
-	if err := r.Close(); err != nil {
-		return 0, fmt.Errorf("ingest.reuseBlob: close blob %d: %v", blob.ID, err)
-	}
-	return blob.ID, nil
+		return s.uploads.Finish(ctx, id, nil, &code)
+	})
 }

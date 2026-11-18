@@ -1,9 +1,116 @@
 basePath: /
 definitions:
+  domain.UploadStatus:
+    enum:
+    - queued
+    - processing
+    - ready
+    - failed
+    type: string
+    x-enum-varnames:
+    - UploadQueued
+    - UploadProcessing
+    - UploadReady
+    - UploadFailed
+  dto.AlbumSummary:
+    properties:
+      public_id:
+        type: string
+      title:
+        type: string
+    type: object
+  dto.ArtistSummary:
+    properties:
+      name:
+        type: string
+      public_id:
+        type: string
+    type: object
   dto.SuccessResponse:
     properties:
       message:
         type: string
+    type: object
+  dto.TrackResponse:
+    properties:
+      album:
+        allOf:
+        - $ref: '#/definitions/dto.AlbumSummary'
+        description: |-
+          Album содержит сведения об альбоме. Если трек не связан с альбомом,
+          поле равно nil и передаётся как null.
+      artist:
+        $ref: '#/definitions/dto.ArtistSummary'
+      bitrate_kbps:
+        type: integer
+      channels:
+        description: Число каналов аудио. Null, если неизвестно.
+        type: integer
+      codec:
+        type: string
+      cover_url:
+        description: |-
+          CoverURL содержит путь к обложке альбома.
+          Если обложка не задана, поле передаётся как null.
+        type: string
+      created_at:
+        description: CreatedAt содержит время создания в миллисекундах с начала эпохи
+          Unix.
+        type: integer
+      disc_no:
+        type: integer
+      duration_ms:
+        description: |-
+          DurationMS содержит длительность трека в миллисекундах.
+          Если длительность неизвестна, поле передаётся как null.
+        type: integer
+      lastfm_url:
+        type: string
+      public_id:
+        type: string
+      sample_rate:
+        type: integer
+      status:
+        type: string
+      title:
+        type: string
+      track_no:
+        type: integer
+      updated_at:
+        description: UpdatedAt содержит время последнего обновления в миллисекундах
+          с начала эпохи Unix.
+        type: integer
+    type: object
+  dto.TrackUploadResponse:
+    properties:
+      completed_at:
+        description: CompletedAt — время завершения в миллисекундах от Unix epoch.
+        type: integer
+        x-nullable: true
+      created_at:
+        description: CreatedAt — время приёма в миллисекундах от Unix epoch.
+        type: integer
+      error_code:
+        enum:
+        - duplicate_audio
+        - target_unavailable
+        - unsupported_audio
+        - processing_failed
+        type: string
+        x-nullable: true
+      public_id:
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/domain.UploadStatus'
+        enum:
+        - queued
+        - processing
+        - ready
+        - failed
+      track_public_id:
+        type: string
+        x-nullable: true
     type: object
   dto.UserRequest:
     properties:
@@ -34,14 +141,343 @@ definitions:
       field:
         type: string
     type: object
-host: localhost:8080
 info:
   contact: {}
-  description: API Somnium Shade Cast
+  description: Тестовая учётная запись администратора для режима prod.
   title: Somnium Shade Cast API
   version: "1.0"
 paths:
+  /dev/users:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Данные пользователя
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.UserResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      summary: Создать тестовый профиль в режиме dev
+      tags:
+      - Dev
+  /dev/users/{publicID}/activate:
+    post:
+      parameters:
+      - description: ULID профиля
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.SuccessResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      summary: Активировать тестовый профиль в режиме dev
+      tags:
+      - Dev
+  /dev/users/{publicID}/deactivate:
+    post:
+      parameters:
+      - description: ULID профиля
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.SuccessResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      summary: Деактивировать тестовый профиль в режиме dev
+      tags:
+      - Dev
+  /ingest/uploads:
+    get:
+      parameters:
+      - default: 50
+        description: Размер страницы
+        in: query
+        maximum: 200
+        minimum: 1
+        name: limit
+        type: integer
+      - default: 0
+        description: Сколько результатов пропустить
+        in: query
+        minimum: 0
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.TrackUploadResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Получить список загрузок
+      tags:
+      - Uploads
+    post:
+      consumes:
+      - multipart/form-data
+      parameters:
+      - description: Ключ повторной отправки
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: JSON с метаданными. Часть meta идёт первой.
+        in: formData
+        name: meta
+        required: true
+        type: string
+      - description: Аудиофайл
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          headers:
+            Location:
+              description: Путь для опроса состояния
+              type: string
+          schema:
+            $ref: '#/definitions/dto.TrackUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "503":
+          description: Service Unavailable
+          headers:
+            Retry-After:
+              description: Ожидание перед повтором в секундах
+              type: string
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Принять файл для фоновой обработки
+      tags:
+      - Uploads
+  /ingest/uploads/{publicID}:
+    get:
+      parameters:
+      - description: ULID загрузки
+        in: path
+        name: publicID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.TrackUploadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Получить состояние загрузки
+      tags:
+      - Uploads
+  /lib/albums/{publicID}:
+    delete:
+      parameters:
+      - description: Публичный ULID
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Удалить треки альбома из своей библиотеки
+      tags:
+      - Library
+  /lib/artists/{publicID}:
+    delete:
+      parameters:
+      - description: Публичный ULID
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Удалить треки исполнителя из своей библиотеки
+      tags:
+      - Library
+  /lib/tracks:
+    get:
+      parameters:
+      - default: 50
+        description: Размер страницы
+        in: query
+        maximum: 200
+        minimum: 1
+        name: limit
+        type: integer
+      - default: 0
+        description: Сколько результатов пропустить
+        in: query
+        minimum: 0
+        name: offset
+        type: integer
+      - description: Поисковая строка до 256 байт
+        in: query
+        name: q
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.TrackResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Получить список треков или результаты поиска
+      tags:
+      - Library
+  /lib/tracks/{publicID}:
+    delete:
+      parameters:
+      - description: Публичный ULID
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Удалить трек из своей библиотеки
+      tags:
+      - Library
+    get:
+      parameters:
+      - description: ULID трека
+        in: path
+        name: publicID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.TrackResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      - BasicAuth: []
+      summary: Получить метаданные трека
+      tags:
+      - Library
   /users:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Список пользователей
+          schema:
+            items:
+              $ref: '#/definitions/dto.UserResponse'
+            type: array
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      summary: Получить список пользователей
+      tags:
+      - Users
     post:
       consumes:
       - application/json
@@ -78,6 +514,33 @@ paths:
       tags:
       - Users
   /users/{publicID}:
+    delete:
+      parameters:
+      - description: Публичный ID пользователя
+        in: path
+        name: publicID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Пользователь удалён
+        "400":
+          description: Неверный ID
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "404":
+          description: Пользователь не найден
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+        "500":
+          description: Внутренняя ошибка сервера
+          schema:
+            $ref: '#/definitions/respond.ErrorBody'
+      security:
+      - DevAuth: []
+      summary: Удалить пользователя
+      tags:
+      - Users
     get:
       description: Возвращает информацию о пользователе по его ID
       parameters:
@@ -175,8 +638,10 @@ paths:
       tags:
       - Users
 securityDefinitions:
+  BasicAuth:
+    type: basic
   DevAuth:
-    description: Публичный ULID активного пользователя для локального режима разработки.
+    description: Публичный ULID активного пользователя для режима dev.
     in: header
     name: X-User
     type: apiKey

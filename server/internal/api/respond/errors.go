@@ -6,15 +6,15 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/DarthanHawke/somnium-shade-cast/server/internal/analysis/prober"
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
 
 var (
-	// ErrUnauthorized — не авторизован
+	// ErrUnauthorized означает отсутствие аутентифицированного пользователя.
 	ErrUnauthorized = errors.New("unauthorized")
 )
 
+// ErrorBody содержит публичное сообщение и, для ошибки валидации, имя поля.
 type ErrorBody struct {
 	Error string `json:"error"`
 	Field string `json:"field,omitempty"`
@@ -24,7 +24,6 @@ type ErrorBody struct {
 // Для ошибки валидации добавляет имя поля, если оно задано.
 // Для ответов 5xx записывает исходную ошибку в лог.
 func WriteError(w http.ResponseWriter, log *slog.Logger, err error) {
-	// ValidationError - структурированная, отдаём поле
 	if ve, ok := errors.AsType[*domain.ValidationError](err); ok {
 		JSON(w, http.StatusBadRequest, ErrorBody{Error: ve.Message, Field: ve.Field})
 		return
@@ -46,10 +45,6 @@ func mapStatus(err error) (int, string) {
 		return http.StatusInternalServerError, "internal error"
 	case errors.Is(err, domain.ErrIncomplete):
 		return http.StatusBadRequest, "incomplete upload"
-	case errors.Is(err, prober.ErrNotAudio):
-		return http.StatusBadRequest, "file is not audio"
-	case errors.Is(err, prober.ErrInvalidFile):
-		return http.StatusBadRequest, "invalid audio file"
 	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound, "not found"
 	case errors.Is(err, domain.ErrConflict):

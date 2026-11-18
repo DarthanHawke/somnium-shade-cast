@@ -1,0 +1,28 @@
+FROM golang:1.27.4-bookworm AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY third_party/ ./third_party/
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -o /out/somnium-shade-cast ./cmd/somnium-shade-cast
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0700 -o 10001 -g 10001 /data
+
+COPY --from=build /out/somnium-shade-cast /usr/local/bin/somnium-shade-cast
+
+ENV SSC_SERVER_HOST=0.0.0.0
+WORKDIR /
+USER 10001:10001
+EXPOSE 8080
+
+HEALTHCHECK --interval=5s --timeout=2s --start-period=10s --retries=6 \
+    CMD curl -fsS -o /dev/null "http://127.0.0.1:${SSC_SERVER_PORT:-8080}/health"
+
+ENTRYPOINT ["/usr/local/bin/somnium-shade-cast"]

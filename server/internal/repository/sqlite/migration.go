@@ -33,20 +33,3 @@ func (db *Database) Migrate(ctx context.Context) error {
 	}
 	return nil
 }
-
-// MigrationStatus возвращает текущую версию схемы БД по данным goose.
-func (db *Database) MigrationStatus(ctx context.Context) (current int64, err error) {
-	migrateFS, err := fs.Sub(migrationsFS, "migrations")
-	if err != nil {
-		return 0, fmt.Errorf("migrate: get sub fs: %w", err)
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db.DB.DB, migrateFS)
-	if err != nil {
-		return 0, fmt.Errorf("migrate: init provider: %w", err)
-	}
-	v, err := provider.GetDBVersion(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("migrate: get version: %w", err)
-	}
-	return v, nil
-}

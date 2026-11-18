@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/DarthanHawke/somnium-shade-cast/server/internal/domain"
 )
@@ -168,6 +170,7 @@ func (r *BlobRepository) DeleteIfOrphan(
 	const query = `
 		DELETE FROM blobs
 		WHERE id = $1 AND ref_count = 0
+		  AND NOT EXISTS (SELECT 1 FROM track_uploads WHERE blob_id = $1)
 		RETURNING storage_path`
 
 	exec := r.db.executor(ctx)
@@ -189,7 +192,8 @@ func (r *BlobRepository) DeleteIfOrphan(
 	return storagePath, nil
 }
 
-// ListOrphans возвращает блобы с нулевым числом ссылок, созданные до createdBeforeMS.
+// ListOrphans возвращает блобы с нулевым счётчиком, не удерживаемые импортом.
+// Выбирает записи, созданные до createdBeforeMS.
 // createdBeforeMS задаёт время Unix в миллисекундах.
 // Результат упорядочен по CreatedAt по возрастанию.
 func (r *BlobRepository) ListOrphans(ctx context.Context, createdBeforeMS int64) ([]*domain.Blob, error) {
@@ -200,6 +204,7 @@ func (r *BlobRepository) ListOrphans(ctx context.Context, createdBeforeMS int64)
             storage_path, ref_count, created_at
         FROM blobs
         WHERE ref_count = 0 AND created_at < $1
+          AND NOT EXISTS (SELECT 1 FROM track_uploads WHERE blob_id = blobs.id)
         ORDER BY created_at`
 
 	exec := r.db.executor(ctx)
@@ -215,7 +220,7 @@ func (r *BlobRepository) ListOrphans(ctx context.Context, createdBeforeMS int64)
 // Наличие файла на диске метод не проверяет.
 func (r *BlobRepository) PathExists(ctx context.Context, rel string) (bool, error) {
 	const op = "blobs.PathExists"
-	const query = `SELECT 1 FROM blobs WHERE storage_path = $1 LIMIT 1`
+	const query = `SELECT 1 FROM blobs WHERE storage_path IN (?1, replace(?1, '/', char(92))) LIMIT 1`
 
 	var exists int
 	exec := r.db.executor(ctx)
@@ -227,4 +232,47 @@ func (r *BlobRepository) PathExists(ctx context.Context, rel string) (bool, erro
 		return false, wrapDBError(op, err)
 	}
 	return true, nil
+}
+
+// PruneOrphans удаляет ограниченную пачку старых блобов без ссылок.
+// Проверяет счётчик и прямые внешние ключи. Возвращает пути после commit.
+func (r *BlobRepository) PruneOrphans(ctx context.Context, before time.Time, limit int) ([]string, error) {
+	const op = "blobs.PruneOrphans"
+	if limit < 1 || txFromContext(ctx) != nil {
+		return nil, fmt.Errorf("%s: positive limit and standalone transaction required", op)
+	}
+
+	const query = `
+		DELETE FROM blobs WHERE id IN (
+		    SELECT b.id FROM blobs b
+		    WHERE b.ref_count = 0 AND b.created_at < ?1
+		      AND NOT EXISTS (SELECT 1 FROM track_uploads WHERE blob_id = b.id)
+		      AND NOT EXISTS (SELECT 1 FROM tracks WHERE blob_id = b.id)
+		      AND NOT EXISTS (SELECT 1 FROM artists WHERE image_blob_id = b.id)
+		      AND NOT EXISTS (SELECT 1 FROM albums WHERE cover_blob_id = b.id)
+		    ORDER BY b.created_at, b.id
+		    LIMIT ?2
+		)
+		RETURNING storage_path`
+	var paths []string
+	// SelectContext читает и закрывает RETURNING до commit.
+	err := NewTxRepository(r.db).WithTransaction(ctx, func(ctx context.Context) error {
+		return wrapDBError(op, r.db.executor(ctx).SelectContext(ctx, &paths, query, before.UnixMilli(), limit))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
+
+// SetAudioMIME обновляет тип аудио после анализа принятого файла.
+func (r *BlobRepository) SetAudioMIME(ctx context.Context, id domain.ID, mime string) error {
+	const query = `
+		UPDATE blobs SET mime_type = COALESCE(NULLIF(?2, ''), mime_type)
+		WHERE id = ?1 AND kind = 'audio'`
+	ok, err := execAffected(ctx, r.db.executor(ctx), "blobs.SetAudioMIME", query, id, mime)
+	if err == nil && !ok {
+		return domain.ErrConflict
+	}
+	return err
 }

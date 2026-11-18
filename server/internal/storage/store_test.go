@@ -31,6 +31,31 @@ func testStore(t *testing.T, root string) *storage.BlobStore {
 	return s
 }
 
+// TestOpenReaderAtSeeksAcrossChunks проверяет произвольные чтения и неполный
+// результат на конце последнего чанка. Эти чтения использует анализ импорта.
+func TestOpenReaderAtSeeksAcrossChunks(t *testing.T) {
+	const chunk = domain.DefaultChunkSize
+	data := make([]byte, 2*chunk+31)
+	rand.Read(data)
+	store := testStore(t, t.TempDir())
+	blob := writeBlob(t, store, data)
+	reader, err := store.OpenReaderAt(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+
+	for _, offset := range []int64{chunk - 7, chunk + 10, 0, 2*chunk + 21, int64(len(data))} {
+		p := make([]byte, 64)
+		want := make([]byte, len(p))
+		wantN, wantErr := bytes.NewReader(data).ReadAt(want, offset)
+		n, err := reader.ReadAt(p, offset)
+		if n != wantN || !errors.Is(err, wantErr) || !bytes.Equal(p[:n], want[:wantN]) {
+			t.Fatalf("ReadAt(%d) = (%d, %v), want (%d, %v)", offset, n, err, wantN, wantErr)
+		}
+	}
+}
+
 // writeBlob записывает данные в зашифрованный файл и собирает метаданные блоба для
 // последующего чтения.
 func writeBlob(t *testing.T, s *storage.BlobStore, data []byte) *domain.Blob {

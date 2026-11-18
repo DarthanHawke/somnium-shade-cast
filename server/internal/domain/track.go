@@ -4,6 +4,7 @@ import (
 	"time"
 )
 
+// TrackStatus различает загруженный трек и запись с ожидающимся аудиофайлом.
 type TrackStatus string
 
 const (
@@ -34,6 +35,7 @@ type Track struct {
 	Codec            string `db:"codec"`
 	BitrateKbps      *int   `db:"bitrate_kbps"`
 	SampleRate       *int   `db:"sample_rate"`
+	Channels         *int   `db:"channels"`
 
 	MBID           string          `db:"mbid"`
 	LastfmURL      string          `db:"lastfm_url"`
@@ -63,6 +65,7 @@ type NewTrackParams struct {
 	Codec            string
 	BitrateKbps      *int
 	SampleRate       *int
+	Channels         *int
 }
 
 // NewTrack создаёт трек и проверяет соответствие статуса привязке блоба.
@@ -108,6 +111,7 @@ func NewTrack(params NewTrackParams) (*Track, error) {
 		Codec:            params.Codec,
 		BitrateKbps:      params.BitrateKbps,
 		SampleRate:       params.SampleRate,
+		Channels:         params.Channels,
 		Enrich:           EnrichPending,
 		CreatedAt:        now,
 		UpdatedAt:        now,

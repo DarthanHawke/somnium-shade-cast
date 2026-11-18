@@ -147,7 +147,7 @@ func (h *StreamHandler) serveContent(
 		return
 	}
 
-	w.Header().Set("Content-Type", c.Blob.MimeType)
+	w.Header().Set("Content-Type", c.Blob.MIMEType)
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.FormatInt(respLen, 10))
 
